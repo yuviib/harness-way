@@ -1,0 +1,43 @@
+name = "mcp-relay-harness-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Dev-only value -- real deployments must override via `wrangler secret put`,
+# never a plaintext var. This is the "known gap, noted not hidden" baseline
+# documented in src/types.ts.
+[vars]
+SUBSCRIBE_TOKEN = "dev-only-shared-secret"
+# Allowlist of origin hosts FeedRelay is permitted to open an upstream
+# connection to -- NOT a "known gap" like the token above, this is an actual
+# enforced boundary against SSRF. Real deployments add each legitimate
+# origin's host explicitly; never set this to "*" or leave it unset.
+ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794"
+
+[[durable_objects.bindings]]
+name = "FEED_RELAY"
+class_name = "FeedRelay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FeedRelay"]
+
+# database_id is a placeholder (matches the real convention for local dev --
+# confirmed against Cloudflare's own vitest-pool-workers D1 test fixture,
+# not guessed). It works for `wrangler dev` and the test suite as-is; a real
+# deploy needs `wrangler d1 create mcp-relay-harness-delivery-log` run once first,
+# with its real returned UUID substituted here before `wrangler deploy`.
+#
+# `wrangler dev` does NOT auto-apply the SQL migrations in migrations/ --
+# confirmed by testing, not assumed: a fresh local D1 state genuinely 404s
+# with "no such table" on every delivery-log write until
+# `wrangler d1 migrations apply mcp-relay-harness-delivery-log --local` has been
+# run at least once. `npm run dev`/`npm run deploy` (see package.json) chain
+# this automatically -- it's a fast, idempotent no-op once already applied
+# -- but running `wrangler dev` directly, bypassing npm scripts, will hit
+# exactly this trap.
+[[d1_databases]]
+binding = "DB"
+database_name = "mcp-relay-harness-delivery-log"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
