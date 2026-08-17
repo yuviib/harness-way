@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Rust build output
+target/
+
+# Generated WASM build output -- regenerate via `npm run build:wasm` in
+# apps/gateway, don't commit it; it's derived from crates/mcp-relay-engine.
+apps/gateway/src/wasm/
+
+# Wrangler-generated ambient types -- regenerate via `npx wrangler types`
+# after checkout or after any wrangler.toml binding change.
+worker-configuration.d.ts
+
+# Wrangler local dev state
+.wrangler/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Editor/OS
+.DS_Store
