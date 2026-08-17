@@ -4,10 +4,11 @@ import { IconMonitor, IconMoon, IconSettings, IconSun } from "./components/Icons
 import { SettingsPanel } from "./components/SettingsPanel";
 import { useGatewaySettings } from "./lib/settings";
 import { type ThemeChoice, useTheme } from "./lib/theme";
+import { AgentsView } from "./views/AgentsView";
 import { GapAudit } from "./views/GapAudit";
 import { LiveFanoutView } from "./views/LiveFanoutView";
 
-type Tab = "fanout" | "gaps";
+type Tab = "fanout" | "gaps" | "agents";
 
 const THEME_OPTIONS: { choice: ThemeChoice; Icon: typeof IconSun; label: string }[] = [
   { choice: "light", Icon: IconSun, label: "Light" },
@@ -73,6 +74,7 @@ export default function App() {
             [
               ["fanout", "Live Fan-out"],
               ["gaps", "Gap Audit"],
+              ["agents", "Agents"],
             ] as const
           ).map(([id, tabLabel]) => (
             <button
@@ -98,6 +100,7 @@ export default function App() {
         <ErrorBoundary key={tab}>
           {tab === "fanout" && <LiveFanoutView settings={settings} />}
           {tab === "gaps" && <GapAudit settings={settings} />}
+          {tab === "agents" && <AgentsView settings={settings} />}
         </ErrorBoundary>
       </main>
     </div>
