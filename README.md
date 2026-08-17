@@ -20,6 +20,15 @@ MCP Relay Harness sits between the origin and its subscribers. It holds exactly 
 
 A second capability, a shared content-addressed cache for discrete tool calls, was scoped in the original plan as a stretch goal behind this one. It was not started; better to ship one capability completely than two half-finished. See `PLAN.md` for the original scoping and reasoning.
 
+**Four real agent consumers**, added on top of Capability 1 once it was working, to answer a different question than the test suite does: not "is the relay correct" but "does that correctness actually matter to something depending on it." Each agent in `apps/agents` is a genuine WebSocket subscriber through the same `/subscribe` endpoint any client uses, and each one's own logic depends on a specific guarantee the relay makes:
+
+- **resume-agent** reconnects on a fixed interval and verifies the replay it gets back is gapless and picks up exactly where it left off.
+- **gap-aware-agent** treats every gap marker as an explicit resync signal, never as silence.
+- **ordering-agent** asserts live that sequence numbers arrive strictly increasing, with a periodic status report.
+- **summarizer-agent** (optional) calls the Gemini API to turn each notification into a one-line summary. Only runs if a Gemini key is configured; the other three work fully without it.
+
+MCP is the protocol AI agents use to talk to tools and resources, so this isn't a stretch: it's the actual shape of who consumes a feed like this. Every agent's decision is logged and shown live in the dashboard's Agents view.
+
 ## Architecture
 
 ```
@@ -27,19 +36,21 @@ A second capability, a shared content-addressed cache for discrete tool calls, w
   origin (MCP server)  <----------------------------  FeedRelay (Durable Object)
    subscriptions/listen                                     |  hibernatable WebSocket
                                                               |  fan-out, N downstream
-                                          ---------------------------------------
-                                          |              |               |
-                                     subscriber 1   subscriber 2   subscriber 3 ...
+                                    -----------------------------------------------------
+                                    |            |            |                         |
+                              subscriber 1  subscriber 2  subscriber 3 ...      apps/agents (4 real consumers)
 
-  Worker (apps/gateway)                   D1 (delivery_log)
+  Worker (apps/gateway)                   D1 (delivery_log, agent_log)
     /subscribe  -> routes to the FeedRelay DO keyed on (originUrl, category)
-    /api/delivery-log, /api/delivery-log/counts  -> read path for the dashboard
+    /api/delivery-log, /api/delivery-log/counts  -> relay history, read by the dashboard
+    /api/agent-log, /api/agent-log/counts        -> agent activity, read by the dashboard
 ```
 
 - **`apps/gateway`** (Cloudflare Worker + Durable Object): the relay itself. `FeedRelay` is one DO instance per feed; it owns the single upstream connection, the replay buffer, and fan-out to every downstream hibernatable WebSocket.
 - **`crates/mcp-relay-engine`** (Rust, compiled to WASM): incremental, chunk-boundary-safe SSE parsing. The upstream response body is a stream that can split an event across two chunks at any byte offset; this is a real parser for that, not a naive split-on-newline. Wired directly into `FeedRelay`'s read loop, not a standalone demo.
 - **`apps/origin-simulator`** (Cloudflare Worker): a synthetic MCP origin implementing just the `subscriptions/listen` shape, for local dev and the chaos harness. Clearly not a real MCP server, and not meant to be.
-- **`apps/dashboard`** (React + Tailwind, on Vite): an operator view. Live Fan-out shows the real topology and per-subscriber message stream; Gap Audit shows every gap marker ever issued against this feed, with cause and true totals.
+- **`apps/agents`** (Node/TypeScript): four real WebSocket consumers of the relay, each exercising a specific correctness property live. See "Four real agent consumers" above.
+- **`apps/dashboard`** (React + Tailwind, on Vite): an operator view. Live Fan-out shows the real topology and per-subscriber message stream; Gap Audit shows every gap marker ever issued against this feed, with cause and true totals; Agents shows what each of the four consumers is actually doing.
 - **`eval`** (Python, `uv`-managed): a chaos-testing harness that kills and restarts the real origin process mid-run, or flaps downstream connections on a schedule, and asserts on the resulting message stream: no silent gaps, no duplicate sequence numbers, correct ordering, correct replay.
 
 ## Why this design, specifically
@@ -56,9 +67,11 @@ Every claim above has a check behind it, not just a design doc:
 |---|---|---|
 | Rust SSE parser and replay buffer | `cargo test` | 25/25 passing |
 | Rust engine | `cargo clippy --all-targets` | clean |
-| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 49/49 passing |
-| Gateway | `wrangler deploy --dry-run` | 53 KiB / 22.76 KiB gzip, comfortably inside the Workers free-tier 3 MiB gzip cap |
+| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 61/61 passing |
+| Gateway | `wrangler deploy --dry-run` | 57 KiB / 23.3 KiB gzip, comfortably inside the Workers free-tier 3 MiB gzip cap |
 | Dashboard | `tsc` + `vite build` + `oxlint` | clean |
+| Agents | `tsc --noEmit` | clean |
+| Agents (against a real live gateway + origin-simulator) | resume-agent, gap-aware-agent, ordering-agent | each logged the expected real activity: 3/3 reconnects verified gapless, a real killed-process outage correctly resynced, 0 ordering violations across 67+ live events |
 | Chaos harness | `pytest` | 28/28 passing |
 
 The chaos harness doesn't mock failures. `upstream-outage` kills and restarts the actual `origin-simulator` process mid-run with `taskkill`; `downstream-flap` repeatedly disconnects and reconnects real WebSocket clients against a live gateway on a randomized schedule. Both scenarios have real recorded runs in `eval/results/`:
@@ -77,6 +90,7 @@ The chaos harness doesn't mock failures. `upstream-outage` kills and restarts th
 - **Not yet deployed to a real Cloudflare account.** Everything above is verified locally against the real `workerd` runtime (via `vitest-pool-workers`) and real killed/restarted processes, but not yet against Cloudflare's actual edge. `wrangler deploy --dry-run` confirms the bundle and bindings are correct; a live deploy is the next step.
 - **Capability 2 (shared content-addressed cache) was not built.** Scoped as a stretch goal behind Capability 1 in the original plan and correctly left out when time didn't allow both.
 - **SSRF-relevant input is checked; the token model is not the strongest possible.** `originUrl` is validated against an explicit allowlist before the relay ever calls `fetch()` on it (see `isAllowedOrigin` in `apps/gateway/src/routes/subscribe.ts`); the auth token comparison is constant-time. Both are real, not theatrical, but the underlying trust model (one shared secret) is the known gap above.
+- **summarizer-agent's live Gemini call is unverified.** It's code-complete, typechecked, and its REST contract matches Gemini's documented API shape, but it needs a real API key to actually run, and the key used to build this wasn't shared back for a live test. The other three agents were verified against real conditions, including a real killed-process outage; this one wasn't.
 
 ## Running it locally
 
@@ -94,15 +108,21 @@ cd apps/gateway && npm run dev
 
 # terminal 3: the operator dashboard
 cd apps/dashboard && npm run dev
+
+# terminal 4 (optional): the four agent consumers
+cd apps/agents && cp .env.example .env && npm install && npm run dev
 ```
 
 Then open the dashboard, point it at the running gateway and origin-simulator (defaults match the ports above), and connect a few subscribers to watch the fan-out live. See `docs/DEMO_SCRIPT.md` for a guided walkthrough, and `eval/README.md` for running the chaos harness.
+
+The gateway and origin-simulator's dev ports are pinned via `[dev]` blocks in their own `wrangler.toml` (8787 and 8794) rather than left to wrangler's default-with-auto-increment behavior. Found necessary by testing, not assumed: with no pinned port, the two Workers can race for the same default port, and the loser silently lands one port over with no error, breaking every hardcoded reference to it across the dashboard and this README.
 
 ## Repo layout
 
 ```
 apps/gateway/            Worker + FeedRelay Durable Object, the relay itself
 apps/origin-simulator/   synthetic MCP origin for dev and chaos testing
+apps/agents/             four real WebSocket agent consumers of the relay
 apps/dashboard/          React + Tailwind operator dashboard
 crates/mcp-relay-engine/  Rust -> WASM: SSE framing, replay ring buffer
 eval/                    Python chaos-testing harness and recorded results
@@ -112,4 +132,4 @@ PLAN.md                  the original scoping document this was built against
 
 ## Tooling
 
-TypeScript throughout the gateway and dashboard, tested with `vitest` against a real `workerd` runtime via `@cloudflare/vitest-pool-workers`, not a mock. Rust engine tested with `cargo test`, linted with `clippy`. Dashboard built with React 19, Tailwind v4, and Vite. Chaos harness in Python, managed with `uv`, tested with `pytest`, linted with `ruff`. Lockfiles committed for every language.
+TypeScript throughout the gateway, agents, and dashboard, tested with `vitest` against a real `workerd` runtime via `@cloudflare/vitest-pool-workers`, not a mock. Rust engine tested with `cargo test`, linted with `clippy`. Dashboard built with React 19, Tailwind v4, and Vite. Agents run as plain Node scripts (Node 22+'s native TypeScript execution, no build step). Chaos harness in Python, managed with `uv`, tested with `pytest`, linted with `ruff`. Lockfiles committed for every language.
