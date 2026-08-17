@@ -1,0 +1,178 @@
+/* Hallmark · genre: modern-minimal · theme: Cobalt (tuned) · app-shaped, not a marketing macrostructure
+ * Cool near-white paper (oklch ~250 hue), electric cobalt accent, Space Grotesk display +
+ * Inter body + JetBrains Mono data/labels, 6px control radii, hairline structure.
+ * Accent unified with dataviz's validated categorical slot-1 blue (#2a78d6 / #3987e5) --
+ * one accent color across UI chrome and chart marks, not two similar-but-different blues.
+ * Both light and dark are fully designed (not a light theme + one dark band) since this
+ * is a tool used in extended sessions, not a one-scroll marketing page. Same hue anchor
+ * (~250-258) in both modes per color.md's dark-mode recipe -- only L/C move.
+ */
+
+@import "tailwindcss";
+
+@theme inline {
+  --font-display: var(--font-display-raw);
+  --font-body: var(--font-body-raw);
+  --font-mono: var(--font-mono-raw);
+
+  --color-paper: var(--color-paper-raw);
+  --color-paper-2: var(--color-paper-2-raw);
+  --color-ink: var(--color-ink-raw);
+  --color-ink-2: var(--color-ink-2-raw);
+  --color-muted: var(--color-muted-raw);
+  --color-rule: var(--color-rule-raw);
+  --color-rule-2: var(--color-rule-raw-2);
+  --color-accent: var(--color-accent-raw);
+  --color-accent-ink: var(--color-accent-ink-raw);
+  --color-focus: var(--color-focus-raw);
+  --color-graphite: var(--color-graphite-raw);
+  --color-graphite-ink: var(--color-graphite-ink-raw);
+  --color-graphite-rule: var(--color-graphite-rule-raw);
+
+  --color-status-good: var(--color-status-good-raw);
+  --color-status-warning: var(--color-status-warning-raw);
+  --color-status-serious: var(--color-status-serious-raw);
+  --color-status-critical: var(--color-status-critical-raw);
+
+  --color-chart-1: var(--color-chart-1-raw);
+  --color-chart-2: var(--color-chart-2-raw);
+  --color-chart-3: var(--color-chart-3-raw);
+
+  --radius-control: 6px;
+  --radius-card: 10px;
+
+  --z-index-base: 1;
+  --z-index-raised: 10;
+  --z-index-dropdown: 100;
+  --z-index-sticky: 200;
+  --z-index-modal: 400;
+  --z-index-toast: 500;
+  --z-index-tooltip: 600;
+}
+
+:root {
+  color-scheme: light;
+
+  --font-display-raw: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body-raw: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono-raw: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --color-paper-raw: oklch(98.5% 0.004 250);
+  --color-paper-2-raw: oklch(96.5% 0.006 252);
+  --color-ink-raw: oklch(24% 0.02 258);
+  --color-ink-2-raw: oklch(37% 0.018 257);
+  --color-muted-raw: oklch(53% 0.014 257);
+  --color-rule-raw: oklch(89% 0.007 255);
+  --color-rule-raw-2: oklch(80% 0.009 255);
+  --color-accent-raw: #2a78d6;
+  --color-accent-ink-raw: oklch(98.5% 0.004 250);
+  --color-focus-raw: #2a78d6;
+  --color-graphite-raw: oklch(22% 0.016 260);
+  --color-graphite-ink-raw: oklch(94% 0.008 256);
+  --color-graphite-rule-raw: oklch(34% 0.016 258);
+
+  --color-status-good-raw: #0ca30c;
+  --color-status-warning-raw: #fab219;
+  --color-status-serious-raw: #ec835a;
+  --color-status-critical-raw: #d03b3b;
+
+  --color-chart-1-raw: #2a78d6;
+  --color-chart-2-raw: #eb6834;
+  --color-chart-3-raw: #1baf7a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --color-paper-raw: oklch(16% 0.014 258);
+    --color-paper-2-raw: oklch(19.5% 0.016 258);
+    --color-ink-raw: oklch(94% 0.008 256);
+    --color-ink-2-raw: oklch(84% 0.01 256);
+    --color-muted-raw: oklch(63% 0.012 256);
+    --color-rule-raw: oklch(30% 0.014 258);
+    --color-rule-raw-2: oklch(37% 0.015 258);
+    --color-accent-raw: #3987e5;
+    --color-accent-ink-raw: oklch(12% 0.012 258);
+    --color-focus-raw: #3987e5;
+    --color-graphite-raw: oklch(12% 0.012 258);
+    --color-graphite-ink-raw: oklch(92% 0.008 256);
+    --color-graphite-rule-raw: oklch(28% 0.014 258);
+
+    --color-status-good-raw: #0ca30c;
+    --color-status-warning-raw: #fab219;
+    --color-status-serious-raw: #ec835a;
+    --color-status-critical-raw: #d03b3b;
+
+    --color-chart-1-raw: #3987e5;
+    --color-chart-2-raw: #d95926;
+    --color-chart-3-raw: #199e70;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-paper-raw: oklch(16% 0.014 258);
+  --color-paper-2-raw: oklch(19.5% 0.016 258);
+  --color-ink-raw: oklch(94% 0.008 256);
+  --color-ink-2-raw: oklch(84% 0.01 256);
+  --color-muted-raw: oklch(63% 0.012 256);
+  --color-rule-raw: oklch(30% 0.014 258);
+  --color-rule-raw-2: oklch(37% 0.015 258);
+  --color-accent-raw: #3987e5;
+  --color-accent-ink-raw: oklch(12% 0.012 258);
+  --color-focus-raw: #3987e5;
+  --color-graphite-raw: oklch(12% 0.012 258);
+  --color-graphite-ink-raw: oklch(92% 0.008 256);
+  --color-graphite-rule-raw: oklch(28% 0.014 258);
+
+  --color-status-good-raw: #0ca30c;
+  --color-status-warning-raw: #fab219;
+  --color-status-serious-raw: #ec835a;
+  --color-status-critical-raw: #d03b3b;
+
+  --color-chart-1-raw: #3987e5;
+  --color-chart-2-raw: #d95926;
+  --color-chart-3-raw: #199e70;
+}
+
+html,
+body {
+  overflow-x: clip;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in oklch, var(--color-accent) 25%, transparent);
+}
+
+/* Focus rings appear instantly -- never transitioned. */
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  transition: none;
+}
+
+/* Tabular figures for anything that's a column of numbers. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
