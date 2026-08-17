@@ -3,6 +3,16 @@ main = "src/index.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Pinned rather than left to wrangler's own default-port-with-auto-increment
+# behavior -- found the hard way: with no [dev] block, this Worker and
+# origin-simulator's both tried to claim wrangler's default port, one lost
+# and silently landed on 8788 instead, breaking every hardcoded "8787"
+# reference across the dashboard, README, and ALLOWED_ORIGIN_HOSTS below
+# with no error, just a service that quietly wasn't where anything expected
+# it to be.
+[dev]
+port = 8787
+
 # Dev-only value -- real deployments must override via `wrangler secret put`,
 # never a plaintext var. This is the "known gap, noted not hidden" baseline
 # documented in src/types.ts.

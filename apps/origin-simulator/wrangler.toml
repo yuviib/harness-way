@@ -1,3 +1,11 @@
 name = "mcp-relay-harness-origin-simulator"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
+
+# Pinned for the same reason as the gateway's own wrangler.toml: with no
+# [dev] block, this and the gateway Worker can race for wrangler's default
+# port, and the loser silently lands somewhere the rest of the stack
+# (gateway's ALLOWED_ORIGIN_HOSTS, the chaos harness's default origin URL)
+# doesn't expect, with no error.
+[dev]
+port = 8794
