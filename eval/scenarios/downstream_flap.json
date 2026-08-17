@@ -1,0 +1,12 @@
+{
+  "name": "downstream-flap",
+  "description": "Several concurrent downstream subscribers repeatedly disconnect and reconnect against a stable upstream, exercising replay-on-reconnect and ordering under concurrent fan-out (PLAN.md correctness properties 3 and 4).",
+  "duration_s": 30,
+  "num_clients": 4,
+  "seed": 42,
+  "category": "resource_changed",
+  "disconnect_min_s": 4,
+  "disconnect_max_s": 9,
+  "max_disconnects_per_client": 5,
+  "gateway_port": 18795
+}

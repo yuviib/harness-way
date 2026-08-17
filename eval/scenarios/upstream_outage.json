@@ -1,0 +1,11 @@
+{
+  "name": "upstream-outage",
+  "description": "The real origin-simulator process is killed and restarted mid-run (a genuine process failure, not a mocked one), exercising FeedRelay's reconnect-with-backoff and live-drop gap marker (PLAN.md's Week 3 reconnect work) against real infrastructure while downstream subscribers stay connected throughout.",
+  "duration_s": 40,
+  "num_clients": 2,
+  "seed": 7,
+  "category": "resource_changed",
+  "max_disconnects_per_client": 0,
+  "upstream_outage_offsets_s": [15, 30],
+  "gateway_port": 18796
+}

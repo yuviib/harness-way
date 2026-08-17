@@ -1,0 +1,28 @@
+[project]
+name = "mcp-relay-harness-eval"
+version = "0.1.0"
+description = "Chaos-testing harness for MCP Relay Harness"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "websockets>=17.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+markers = [
+    "live: requires a real running gateway + origin-simulator (excluded by default; run with -m live)",
+]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
