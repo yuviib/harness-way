@@ -13,8 +13,12 @@ export interface Config {
   category: string;
 }
 
+// `||`, not `??`: a bare `KEY=` line in .env is read by Node's --env-file
+// as an empty string, not undefined, so a nullish-only fallback would
+// silently accept "" instead of the intended default (see
+// summarizerAgent.ts's own comment on exactly this, caught for real there).
 function requireEnv(name: string, fallback: string): string {
-  return process.env[name] ?? fallback;
+  return process.env[name] || fallback;
 }
 
 export function loadConfig(): Config {

@@ -8,7 +8,13 @@ import { type BufferedEvent, type Config, connect, loadConfig, logAction, parseM
 
 const AGENT_NAME = "summarizer-agent";
 const AGENT_ROLE = "Calls the Gemini API to turn each notification into a one-line human-readable summary.";
-const DEFAULT_MODEL = "gemini-2.0-flash";
+// "gemini-flash-latest" is a stable alias Google maintains rather than a
+// dated version -- confirmed against the actual /v1beta/models list for a
+// real key (not assumed): the specific dated model this defaulted to
+// originally ("gemini-2.0-flash") no longer exists at all, a real 404 not
+// a config mistake, since model availability moves faster than this
+// default should need re-verifying by hand.
+const DEFAULT_MODEL = "gemini-flash-latest";
 // Conservative client-side throttle. Free-tier per-minute limits vary by
 // model and account and change over time, so this errs low rather than
 // assuming a specific number -- skipped calls are silently dropped, never
@@ -89,6 +95,11 @@ export function startSummarizerAgent(config: Config = loadConfig()): Promise<nev
     console.warn(`[${AGENT_NAME}] GEMINI_API_KEY not set, this agent will not run. The other three work fine without it.`);
     return null;
   }
-  const model = process.env.GEMINI_MODEL ?? DEFAULT_MODEL;
+  // `||`, not `??`: an unset var and an empty string both mean "use the
+  // default" here. Found by testing, not assumed -- .env.example ships a
+  // bare `GEMINI_MODEL=` line, which Node's --env-file reads as "", not
+  // undefined, so `??` alone silently picked "" as the model and every
+  // call 404'd on an empty model name in the URL.
+  const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   return run(config, apiKey, model);
 }

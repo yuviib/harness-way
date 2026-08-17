@@ -72,6 +72,7 @@ Every claim above has a check behind it, not just a design doc:
 | Dashboard | `tsc` + `vite build` + `oxlint` | clean |
 | Agents | `tsc --noEmit` | clean |
 | Agents (against a real live gateway + origin-simulator) | resume-agent, gap-aware-agent, ordering-agent | each logged the expected real activity: 3/3 reconnects verified gapless, a real killed-process outage correctly resynced, 0 ordering violations across 67+ live events |
+| summarizer-agent (against the real Gemini API, a real user-provided free-tier key) | live run | produced real one-line summaries end to end after fixing two real bugs (a dead default model, an empty-string env fallback); free-tier `429`s after that are Google's own rate limiting, not this code |
 | Chaos harness | `pytest` | 28/28 passing |
 
 The chaos harness doesn't mock failures. `upstream-outage` kills and restarts the actual `origin-simulator` process mid-run with `taskkill`; `downstream-flap` repeatedly disconnects and reconnects real WebSocket clients against a live gateway on a randomized schedule. Both scenarios have real recorded runs in `eval/results/`:
@@ -90,7 +91,7 @@ The chaos harness doesn't mock failures. `upstream-outage` kills and restarts th
 - **Not yet deployed to a real Cloudflare account.** Everything above is verified locally against the real `workerd` runtime (via `vitest-pool-workers`) and real killed/restarted processes, but not yet against Cloudflare's actual edge. `wrangler deploy --dry-run` confirms the bundle and bindings are correct; a live deploy is the next step.
 - **Capability 2 (shared content-addressed cache) was not built.** Scoped as a stretch goal behind Capability 1 in the original plan and correctly left out when time didn't allow both.
 - **SSRF-relevant input is checked; the token model is not the strongest possible.** `originUrl` is validated against an explicit allowlist before the relay ever calls `fetch()` on it (see `isAllowedOrigin` in `apps/gateway/src/routes/subscribe.ts`); the auth token comparison is constant-time. Both are real, not theatrical, but the underlying trust model (one shared secret) is the known gap above.
-- **summarizer-agent's live Gemini call is unverified.** It's code-complete, typechecked, and its REST contract matches Gemini's documented API shape, but it needs a real API key to actually run, and the key used to build this wasn't shared back for a live test. The other three agents were verified against real conditions, including a real killed-process outage; this one wasn't.
+- **The default Gemini model needed a real key to catch.** The original default (`gemini-2.0-flash`) turned out not to exist anymore against a real `/v1beta/models` listing; fixed to `gemini-flash-latest`, a stable alias rather than a dated snapshot. A second, separate bug surfaced alongside it: `.env.example`'s bare `GEMINI_MODEL=` line is read as an empty string by Node's `--env-file`, and `??` doesn't fall back on an empty string the way it does on `undefined`, so the override was silently winning over the default with nothing in it. Switched to `||` for that fallback. With both fixed, a real key produced real one-line summaries end to end; free-tier quota limits (`429`) after that are Google's rate limiting working as intended, not a bug here.
 
 ## Running it locally
 
