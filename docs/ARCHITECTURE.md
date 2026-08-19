@@ -64,6 +64,35 @@ Two entry points read this log: `GET /api/delivery-log` (row-window queries, fil
 | Replay within the buffer window is complete, ordered, and deduplicated | `FeedRelay.test.ts`, `ring_buffer.rs` unit tests, `_check_replay_is_self_consistent` |
 | Ordering preserved under concurrent fan-out | `downstream-flap` chaos scenario, `_check_strictly_increasing_within_run` |
 | Upstream-residency cost, measured not assumed | Not yet done. Needs a real deploy; tracked as an open item, not silently dropped. |
+| A served cache hit is byte-identical to what produced its hash (Capability 2) | `ContextIndex.test.ts` ("stores then serves byte-identical content"), `relay.test.ts` ("second identical call ... served from cache") |
+| Fail-open on a discrete cache miss: always a full real call, never an error, never partial content (Capability 2) | `relay.test.ts` ("fails open on a discrete cache miss"), `cacheClient.test.ts` (the DO-unreachable half of fail-open) |
+| Scope isolation: no caller resolves into another scope's cached entry (Capability 2) | `ContextIndex.test.ts` ("scope isolation"), `relay.test.ts` ("a different scope ... is its own cache miss") |
+
+## Capability 2: the shared, content-addressed discrete-call cache
+
+Where Capability 1 multiplexes a long-lived stream, Capability 2 does the equivalent for a one-shot `tools/call`: a caller POSTs `{originUrl, scope, tool, arguments}` to `POST /relay`; if another caller in the same `scope` already asked the identical question, the answer comes back from cache, and the origin is never touched a second time.
+
+### Two hashes, not one
+
+`buildRequestHash` (`apps/gateway/src/lib/cacheKey.ts`) hashes a canonicalized (recursively key-sorted) JSON encoding of `{originUrl, tool, arguments}` — this is the cache **index key**, identifying "this exact call" independent of how a particular HTTP client happened to order its JSON keys. Separately, once a real call succeeds, its raw response body is hashed again to produce the **content address** (`resultHash`) the bytes are stored under. Two different requests that happen to produce byte-identical output legitimately share a `resultHash` — that's content-addressing working as intended, not a collision to worry about. Both hashes are BLAKE3, computed by a WASM export (`blake3_hex`, `crates/mcp-relay-engine/src/hash.rs`) added to the same Rust crate Capability 1's SSE parser already lives in, for the same reason: this is genuine hot-path logic worth testing natively before it's ever compiled to WASM (`hash.rs`'s own 5 tests, including the published BLAKE3 empty-input test vector, asserted as a known value so a future dependency bump that silently changed the algorithm would be caught).
+
+### Storage: DO SQLite, not Cache API/KV — a revised decision, stated like the last one
+
+PLAN.md's original repo-layout sketch named this `src/lib/cacheClient.ts # Cache API / KV read-write`, written before any of this was actually built. Building it surfaced the same tension Capability 1's replay buffer already resolved once: the Cache API's best-effort, evict-at-any-time, edge-local semantics make the correctness properties this cache is supposed to demonstrate (byte-identical replay, scope isolation) hard to pin down deterministically in a test. `ContextIndex` (`apps/gateway/src/do/ContextIndex.ts`) is a Durable Object instead — one instance per `scope`, keyed via `idFromName`, backed by `ctx.storage.sql` — same storage mechanism `FeedRelay`'s own replay buffer already uses, for the same reason.
+
+Scope isolation (correctness property 7) falls out of this structurally, not as a runtime check: two different scopes are two different DO instances with two entirely separate SQLite databases. There is no code path inside `ContextIndex` that could leak one scope's entry into another's lookup — a bug there would have to be `routes/relay.ts` routing to the wrong DO instance, a distinct and separately-tested failure mode.
+
+### Fail-open, precisely scoped
+
+PLAN.md's correctness property 6 ("fail-open on a discrete cache miss ... never an error, never partial content") covers two distinct situations that converge on the same behavior: a genuine miss (the index honestly has never seen this request) and an index *failure* (the `ContextIndex` DO fetch throws or returns non-OK). `lib/cacheClient.ts`'s `lookupCache` never throws — both cases resolve to "nothing served from cache," logged under different `cache_log` outcomes (`miss` vs `fail-open`) so a sustained run of index failures stays visible rather than blending into ordinary cold-cache traffic — and `routes/relay.ts` always falls through to a real origin call either way. What is **not** papered over: if the real origin call itself fails, that surfaces as an actual `502`, and nothing gets cached — there is no honest content to serve or store in that case, same principle as every other upstream-call failure in this codebase.
+
+### Proving it against a real origin, not a mock
+
+`apps/origin-simulator`'s synthetic `resource_lookup` tool (added alongside this capability) returns deterministic content for a given `resourceId` plus a monotonically-increasing `originCallSeq` that only advances on a genuinely new call. That's what makes "this response came from cache, not a second real call" independently verifiable rather than merely inferred: `apps/agents/src/cacheSharingAgent.ts` (`npm run demo:cache`) drives two distinct logical callers against a shared scope end to end against the real dev stack — the second caller's response carries the *same* `originCallSeq` as the first, and arrives roughly an order of magnitude faster (the simulator adds a real 250ms artificial tool latency specifically so the saving is observable, not theoretical).
+
+### Dashboard: Cache Metrics
+
+`CacheMetrics.tsx` polls `GET /api/cache-log/stats` (true aggregate hit rate, bytes saved, and average latency by outcome — same "totals need their own `GROUP BY` query, not a summed row window" discipline as `GapAudit`'s and `AgentsView`'s own counts endpoints) and `GET /api/cache-log` for a recent-accesses table, filterable by `scope`.
 
 ## Dashboard
 

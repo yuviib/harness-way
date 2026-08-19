@@ -32,7 +32,22 @@ Switch to the **Agents** tab. Point out, per card:
 
 The point to land here: these aren't decorative test clients. Each agent's own logic is written assuming the relay's guarantees hold, gapless replay, honest gap signaling, strict ordering, and the dashboard is showing those assumptions being validated live, not asserted in a test file nobody in the room can see.
 
-## 4. If there's time: show the chaos harness results directly
+## 4. Show the second capability: a real caller sharing another caller's cached result (Cache Metrics, ~1.5 minutes)
+
+Run the two-caller demo live: `cd apps/agents && npm run demo:cache`.
+
+Narrate each step as it prints:
+- **Step 1**: `caller-agent-1` asks the relay's `POST /relay` a question nobody has asked yet, in a fresh scope. `x-cache: MISS`, and the response takes ~250-400ms — the origin-simulator's synthetic tool has a real artificial latency baked in specifically so this is felt, not just claimed.
+- **Step 2**: `caller-agent-2` — a genuinely separate call, modeling a different caller process, not a repeat from the same one — asks the *identical* question in the *same* scope. `x-cache: HIT`, ~20-40ms, and the script asserts the body is byte-identical to step 1's. Point out `originCallSeq` inside both JSON bodies: it's the *same number* in both responses, proof the origin was never asked a second time, not just an inference from the response being fast.
+- **Step 3**: a third caller asks the identical question in an *unrelated* scope. `x-cache: MISS` again, and `originCallSeq` has advanced — a different scope never sees another scope's cached entry. This is scope isolation, demonstrated, not just tested.
+
+Then switch to the dashboard's **Cache Metrics** tab, optionally filtering the scope box to the `demo-shared-...` scope the script printed at the end. Point out:
+- Hit rate, bytes saved, and "latency saved / hit" all come from `GET /api/cache-log/stats`, a real `GROUP BY` aggregate over `cache_log`, not a client-side sum of whatever rows happen to be visible.
+- The outcome bar and recent-accesses table are reading the exact same D1 rows the `/relay` calls above just wrote — refresh the terminal demo again and watch the tab update within its 4-second poll.
+
+Worth stating plainly if asked: `scope` here is caller-supplied, not derived from real authenticated identity — the same "known gap, noted not hidden" boundary as the shared subscribe token (see "What not to claim" below).
+
+## 5. If there's time: show the chaos harness results directly
 
 ```bash
 cd eval
@@ -44,5 +59,5 @@ Three real recorded runs, each killing a real process or flapping real WebSocket
 ## What not to claim
 
 - Not deployed to real Cloudflare infrastructure yet, this is all local `wrangler dev`. Say so if asked about a live URL.
-- The auth model is a shared dev token, not per-agent identity. Say so if asked how a real deployment would handle multiple untrusted callers.
-- Capability 2 (a shared content-addressed cache) was scoped but never built. Say so rather than implying it exists.
+- The auth model is a shared dev token, not per-agent identity. Say so if asked how a real deployment would handle multiple untrusted callers. Capability 2's `scope` is caller-supplied for the same reason — a real deployment would derive it from real identity, but there is no real per-caller identity to derive it from yet in v1.
+- Capability 2's cache-index lookup is a Durable Object with its own SQLite storage, not the Cache API or KV named in the original plan sketch — say so if asked why, and point to `docs/ARCHITECTURE.md`'s "storage: DO SQLite, not Cache API/KV" section for the reasoning (same one `FeedRelay`'s own replay buffer already settled).
