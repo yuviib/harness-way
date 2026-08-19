@@ -77,6 +77,19 @@ MCP is the protocol AI agents use to talk to tools and resources, so this isn't 
 - **The asymmetry is real and stated, not glossed over.** Hibernation covers the DO's incoming downstream WebSockets. It does not cover the DO's own outgoing leg: the upstream `subscriptions/listen` connection is a `fetch()` with a streamed body the DO has to actively keep reading, which keeps the instance resident the whole time that connection is open, independent of downstream subscriber count. That's a real, measurable cost, not a detail to imply away. Measuring it (correctness property 4b in `PLAN.md`) needs a real deploy, which hasn't happened yet, so this is an open item, not a finished one.
 - **No queue-depth signal from the platform, so the backpressure story is scoped to what's actually detectable.** Cloudflare's hibernatable WebSocket `send()` exposes no `bufferedAmount` or equivalent (checked against `cloudflare/workerd#988`, open since 2023). There is no way for a Durable Object to tell that one specific downstream client is genuinely network-slow. What's built instead: a bounded per-socket outbound queue. If a single upstream chunk produces more events than the cap, the oldest queued ones for that socket are dropped and the client gets an explicit gap marker before the survivors. This guarantees the DO's own memory can't grow unboundedly and that any drop is always signaled, but it does not guarantee reacting to a slow network client, because the platform gives no signal to react to.
 
+## Dashboard
+
+<table>
+<tr>
+<td><img src="docs/screenshots/live-fanout.png" alt="Live Fan-out view showing three connected subscribers and the real relay topology" width="440"><br><sub>Live Fan-out: real per-subscriber WebSocket connections, not simulated</sub></td>
+<td><img src="docs/screenshots/gap-audit.png" alt="Gap Audit view showing true totals and gap causes" width="440"><br><sub>Gap Audit: true totals via the counts endpoint, gap causes, throughput trend</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/agents.png" alt="Agents view showing live activity from the four real consumers" width="440"><br><sub>Agents: what each of the four real consumers is actually doing</sub></td>
+<td><img src="docs/screenshots/cache-metrics.png" alt="Cache Metrics view showing hit rate, bytes saved, and recent cache accesses" width="440"><br><sub>Cache Metrics: real hit rate, bytes saved, and per-scope access log</sub></td>
+</tr>
+</table>
+
 ## Verified, not assumed
 
 Every claim above has a check behind it, not just a design doc:
