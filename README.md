@@ -155,3 +155,7 @@ PLAN.md                  the original scoping document this was built against
 ## Tooling
 
 TypeScript throughout the gateway, agents, and dashboard, tested with `vitest` against a real `workerd` runtime via `@cloudflare/vitest-pool-workers`, not a mock. Rust engine tested with `cargo test`, linted with `clippy`. Dashboard built with React 19, Tailwind v4, and Vite. Agents run as plain Node scripts (Node 22+'s native TypeScript execution, no build step). Chaos harness in Python, managed with `uv`, tested with `pytest`, linted with `ruff`. Lockfiles committed for every language.
+
+## License
+
+MIT, see `LICENSE`.
