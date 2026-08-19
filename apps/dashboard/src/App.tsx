@@ -5,10 +5,11 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { useGatewaySettings } from "./lib/settings";
 import { type ThemeChoice, useTheme } from "./lib/theme";
 import { AgentsView } from "./views/AgentsView";
+import { CacheMetrics } from "./views/CacheMetrics";
 import { GapAudit } from "./views/GapAudit";
 import { LiveFanoutView } from "./views/LiveFanoutView";
 
-type Tab = "fanout" | "gaps" | "agents";
+type Tab = "fanout" | "gaps" | "agents" | "cache";
 
 const THEME_OPTIONS: { choice: ThemeChoice; Icon: typeof IconSun; label: string }[] = [
   { choice: "light", Icon: IconSun, label: "Light" },
@@ -75,6 +76,7 @@ export default function App() {
               ["fanout", "Live Fan-out"],
               ["gaps", "Gap Audit"],
               ["agents", "Agents"],
+              ["cache", "Cache Metrics"],
             ] as const
           ).map(([id, tabLabel]) => (
             <button
@@ -101,6 +103,7 @@ export default function App() {
           {tab === "fanout" && <LiveFanoutView settings={settings} />}
           {tab === "gaps" && <GapAudit settings={settings} />}
           {tab === "agents" && <AgentsView settings={settings} />}
+          {tab === "cache" && <CacheMetrics settings={settings} />}
         </ErrorBoundary>
       </main>
     </div>

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node --env-file=.env --experimental-strip-types src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "demo:cache": "node --env-file=.env --experimental-strip-types src/cacheSharingAgent.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
