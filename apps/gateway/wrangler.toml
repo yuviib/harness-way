@@ -28,9 +28,23 @@ ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794"
 name = "FEED_RELAY"
 class_name = "FeedRelay"
 
+[[durable_objects.bindings]]
+name = "CONTEXT_INDEX"
+class_name = "ContextIndex"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["FeedRelay"]
+
+# Separate migration tag, not folded into v1 -- ContextIndex was added
+# after FeedRelay was already deployed under v1's migration, and Durable
+# Object migrations are append-only/sequential by design (each tag
+# describes a delta from the previous one, not a full restatement) --
+# retroactively adding ContextIndex to v1 would be incorrect for any
+# environment where v1 already ran.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ContextIndex"]
 
 # database_id is a placeholder (matches the real convention for local dev --
 # confirmed against Cloudflare's own vitest-pool-workers D1 test fixture,

@@ -28,3 +28,8 @@ export interface WasmSseParser {
   flush(): string;
 }
 export const WasmSseParser: new () => WasmSseParser = bindgen.WasmSseParser;
+
+// BLAKE3, hex-encoded -- backs Capability 2's content-addressed cache (see
+// src/lib/cacheKey.ts). A plain function export, not a struct: unlike
+// WasmSseParser there is no state to hold across calls.
+export const blake3Hex: (data: string) => string = bindgen.blake3_hex;

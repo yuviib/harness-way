@@ -1,6 +1,8 @@
+mod hash;
 mod ring_buffer;
 mod sse_framing;
 
+pub use hash::hash_hex;
 pub use ring_buffer::{BufferedEvent, ReplaySince, RingBuffer};
 pub use sse_framing::{SseEvent, SseParser};
 
@@ -48,4 +50,17 @@ impl Default for WasmSseParser {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Content hash for Capability 2's cache: BLAKE3 over the UTF-8 bytes of
+/// `data`, hex-encoded. Stateless (unlike `WasmSseParser`) -- a plain
+/// function export rather than a struct, since there is no per-call state
+/// to hold across invocations. The gateway calls this twice per
+/// origin-hitting relay call: once over a canonicalized (sorted-keys) JSON
+/// encoding of the request to derive the cache index key, and once over the
+/// raw response body to derive the content-addressed storage key -- see
+/// apps/gateway/src/lib/cacheKey.ts.
+#[wasm_bindgen]
+pub fn blake3_hex(data: &str) -> String {
+    hash_hex(data.as_bytes())
 }

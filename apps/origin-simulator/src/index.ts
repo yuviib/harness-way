@@ -16,7 +16,84 @@ interface JsonRpcRequest {
   jsonrpc?: string;
   id?: number | string | null;
   method?: string;
-  params?: { category?: string };
+  params?: { category?: string; name?: string; arguments?: Record<string, unknown> };
+}
+
+function jsonRpcError(id: number | string | null | undefined, code: number, message: string, status: number): Response {
+  return new Response(JSON.stringify({ jsonrpc: "2.0", id: id ?? null, error: { code, message } }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Global (module-scope, so it persists across requests within one isolate,
+// same lifetime assumption as any other in-memory dev/eval fixture in this
+// simulator) counter of real tools/call invocations -- deliberately NOT
+// keyed by resourceId or reset per call. This is the one honest signal the
+// synthetic backend can offer that a caller can independently check: if the
+// gateway's cache is genuinely serving a second identical request from
+// cache rather than re-calling this origin, this counter will NOT have
+// advanced between the two responses. If it silently re-hit the origin
+// (a caching bug), the second response's originCallSeq would visibly differ
+// even though the resourceId and content are otherwise identical. Proving
+// "served from cache" this way -- by an independently observable side
+// effect the cache layer cannot fake -- is a real correctness check, not
+// asserted from wishful thinking.
+let toolCallSeq = 0;
+
+// Artificial latency on every real tool call, simulating a non-trivial
+// origin (a slow downstream lookup, a rate-limited third-party API) --
+// otherwise a cache's whole benefit (skip the slow part on a hit) is
+// unobservable in a synthetic demo where the "real" call is already instant.
+const SYNTHETIC_TOOL_LATENCY_MS = 250;
+
+// One deterministic synthetic tool: same resourceId always produces the
+// same snapshot content (byte-for-byte, modulo the always-advancing
+// originCallSeq/computedAt fields that exist specifically to prove a given
+// response came from a real call vs. a cache hit -- see toolCallSeq above).
+// Scope deliberately narrow, same discipline as subscriptions/listen above:
+// this simulates just enough of a real MCP tools/call to exercise the
+// relay's caching logic, not a general tool-execution sandbox.
+async function handleToolsCall(body: JsonRpcRequest): Promise<Response> {
+  const name = body.params?.name;
+  if (name !== "resource_lookup") {
+    return jsonRpcError(body.id, -32602, `Unknown tool "${name ?? ""}" -- this simulator only implements "resource_lookup"`, 400);
+  }
+  const resourceId = body.params?.arguments?.resourceId;
+  if (typeof resourceId !== "string" || resourceId.length === 0) {
+    return jsonRpcError(body.id, -32602, "arguments.resourceId (non-empty string) is required", 400);
+  }
+
+  await sleep(SYNTHETIC_TOOL_LATENCY_MS);
+  toolCallSeq += 1;
+
+  // Deterministic pseudo-content derived from resourceId alone, so two
+  // real (non-cached) calls for the SAME resourceId still produce
+  // byte-identical `snapshot` content -- what varies between them is only
+  // originCallSeq/computedAt, which is exactly what makes those two fields
+  // useful as a "was this actually a fresh call" signal rather than noise.
+  let hash = 0;
+  for (let i = 0; i < resourceId.length; i++) {
+    hash = (hash * 31 + resourceId.charCodeAt(i)) | 0;
+  }
+  const snapshot = `resource-${resourceId}-state-${Math.abs(hash)}`;
+
+  return new Response(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: body.id ?? null,
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ resourceId, snapshot }) }],
+        originCallSeq: toolCallSeq,
+        computedAt: new Date().toISOString(),
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
 }
 
 export default {
@@ -25,8 +102,9 @@ export default {
 
     if (request.method !== "POST" || url.pathname !== "/mcp") {
       return new Response(
-        "POST a JSON-RPC subscriptions/listen request to /mcp, e.g.\n" +
-          '{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"category":"resource_changed"}}\n',
+        "POST a JSON-RPC request to /mcp, e.g.\n" +
+          '{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"category":"resource_changed"}}\n' +
+          '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"resource_lookup","arguments":{"resourceId":"42"}}}\n',
         { status: 200 },
       );
     }
@@ -39,6 +117,10 @@ export default {
         status: 400,
         headers: { "content-type": "application/json" },
       });
+    }
+
+    if (body.method === "tools/call") {
+      return handleToolsCall(body);
     }
 
     if (body.method !== "subscriptions/listen") {
