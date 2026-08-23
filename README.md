@@ -48,6 +48,8 @@ See `docs/ARCHITECTURE.md`'s "Capability 2" section for the full design, includi
 
 MCP is the protocol AI agents use to talk to tools and resources, so this isn't a stretch. It's the actual shape of who consumes a feed like this. Every agent's decision is logged and shown live in the dashboard's Agents view.
 
+**A fifth consumer exists outside this repo entirely.** [Fraud Ops](https://github.com/yuviib/fraud-ops) is a separate project, its own repo and its own deployment, built by pointing a two-panel operator console at this relay's real production gateway rather than a local copy. One panel subscribes to a synthetic fraud-case feed directly; the other subscribes through this relay. Trigger a real outage and the difference is immediate: the direct subscriber goes quiet with no indication anything happened, the relay-backed one gets an honest gap marker and, on reconnect, a real count of what it missed. It exists to answer a question this repo's own test suite and agents can't: does the guarantee actually matter to something built independently on top of it. It does.
+
 ## Architecture
 
 ```
