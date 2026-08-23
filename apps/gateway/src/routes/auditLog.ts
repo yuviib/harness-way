@@ -23,8 +23,16 @@ const CORS_HEADERS: Record<string, string> = {
 // hash chain would only ever let "prove nothing was altered" apply to one
 // shard at a time, a weaker and more confusing claim than covering the
 // whole log.
+//
+// "global-v3", not "global": bumped twice now, same reasoning already
+// applied to the relay's own feed buffer (see fraud-ops/console's
+// relayClient.ts) -- heavy manual testing of the triage agent against a
+// real, rate-limited free-tier Gemini key left this log dominated by
+// quota-exhaustion error entries, real and honestly logged, but not what
+// a first-time visitor should see as the demo's own opening state. A
+// fresh instance name routes to a brand new, empty chain going forward.
 function auditLogStub(env: Env) {
-  const id = env.AUDIT_LOG.idFromName("global");
+  const id = env.AUDIT_LOG.idFromName("global-v3");
   return env.AUDIT_LOG.get(id);
 }
 
