@@ -10,7 +10,10 @@ export { buildFeedKey };
 // raw `===` on the token short-circuits on the first differing byte, a
 // known (if narrow) timing side-channel. Hashing both sides to a fixed-
 // length digest before comparing removes both that and any length-based
-// signal on the raw secret.
+// signal on the raw secret; `crypto.subtle.timingSafeEqual` (a real, if
+// non-standard, Workers runtime extension) does the constant-time compare
+// itself, exactly the two-step recipe Cloudflare's own docs describe for
+// this, rather than a hand-rolled XOR loop reimplementing the same thing.
 export async function isAuthorized(request: Request, env: Env): Promise<boolean> {
   // Fail closed on a missing token: `TextEncoder.encode(undefined)` hashes
   // identically to `encode("")`, so without this guard, an unset
@@ -37,17 +40,9 @@ export async function isAuthorized(request: Request, env: Env): Promise<boolean>
     crypto.subtle.digest("SHA-256", encoder.encode(provided)),
     crypto.subtle.digest("SHA-256", encoder.encode(env.SUBSCRIBE_TOKEN)),
   ]);
-  const a = new Uint8Array(providedDigest);
-  const b = new Uint8Array(expectedDigest);
-  // Both are always 32 bytes (fixed SHA-256 output length), so there is no
-  // length-based branch here regardless of the provided token's length --
-  // the non-null assertions are safe specifically because of that fixed,
-  // known length, not a general assumption about indexed access.
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a[i]! ^ b[i]!;
-  }
-  return diff === 0;
+  // Both are always 32 bytes (fixed SHA-256 output length), so timingSafeEqual
+  // never hits its equal-length requirement as a real constraint here.
+  return crypto.subtle.timingSafeEqual(providedDigest, expectedDigest);
 }
 
 // Real Workers Rate Limiting binding (see wrangler.toml), not a hand-rolled
