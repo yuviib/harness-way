@@ -6,24 +6,20 @@
 // lib/cacheLog.ts's logCacheAccess, not by an external POST, so (like
 // deliveryLog.ts, unlike agentLog.ts) this file only ever reads.
 
+import { corsHeaders } from "../lib/cors";
 import { isAuthorized } from "./subscribe";
-
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Authorization",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-};
 
 const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 100;
 
-export function handleCacheLogPreflight(): Response {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
+export function handleCacheLogPreflight(request: Request): Response {
+  return new Response(null, { status: 204, headers: corsHeaders(request, "GET, OPTIONS", "Authorization") });
 }
 
 export async function handleCacheLog(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, OPTIONS", "Authorization");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   const url = new URL(request.url);
@@ -41,7 +37,7 @@ export async function handleCacheLog(request: Request, env: Env): Promise<Respon
 
   return new Response(JSON.stringify(results), {
     status: 200,
-    headers: { "content-type": "application/json", ...CORS_HEADERS },
+    headers: { "content-type": "application/json", ...cors },
   });
 }
 
@@ -52,8 +48,9 @@ export async function handleCacheLog(request: Request, env: Env): Promise<Respon
 // to make, which is the literal, defensible meaning of "saved" here --
 // not an estimate or a multiplier applied after the fact.
 export async function handleCacheLogStats(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, OPTIONS", "Authorization");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   const url = new URL(request.url);
@@ -89,6 +86,6 @@ export async function handleCacheLogStats(request: Request, env: Env): Promise<R
       hitRate,
       bytesSaved: byOutcome.hit.bytes,
     }),
-    { status: 200, headers: { "content-type": "application/json", ...CORS_HEADERS } },
+    { status: 200, headers: { "content-type": "application/json", ...cors } },
   );
 }

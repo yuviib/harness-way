@@ -16,9 +16,9 @@ async function seedRow(
     .run();
 }
 
-function authedRequest(path: string, query: string): Request {
+function authedRequest(path: string, query: string, origin?: string): Request {
   return new Request(`https://x${path}${query}`, {
-    headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}` },
+    headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}`, ...(origin ? { Origin: origin } : {}) },
   });
 }
 
@@ -51,13 +51,18 @@ describe("handleCacheLog", () => {
     expect(rows).toHaveLength(5);
   });
 
-  it("sets CORS headers on the data response", async () => {
-    const res = await handleCacheLog(authedRequest("/api/cache-log", "?scope=whatever"), env);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  it("echoes back the request's own Origin when it's on the allowlist", async () => {
+    const res = await handleCacheLog(authedRequest("/api/cache-log", "?scope=whatever", "https://fraud-ops-console.ybains-dev.workers.dev"), env);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://fraud-ops-console.ybains-dev.workers.dev");
+  });
+
+  it("omits Access-Control-Allow-Origin entirely for an origin not on the allowlist", async () => {
+    const res = await handleCacheLog(authedRequest("/api/cache-log", "?scope=whatever", "https://evil.example.com"), env);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
   it("answers an OPTIONS preflight without requiring auth", () => {
-    const res = handleCacheLogPreflight();
+    const res = handleCacheLogPreflight(new Request("https://x/api/cache-log", { method: "OPTIONS" }));
     expect(res.status).toBe(204);
     expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
   });

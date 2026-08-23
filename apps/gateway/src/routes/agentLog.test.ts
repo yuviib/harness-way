@@ -8,12 +8,13 @@ function authedRequest(query: string): Request {
   });
 }
 
-function postRequest(body: unknown, auth = true): Request {
+function postRequest(body: unknown, auth = true, origin?: string): Request {
   return new Request("https://x/api/agent-log", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       ...(auth ? { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}` } : {}),
+      ...(origin ? { Origin: origin } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -64,12 +65,24 @@ describe("handleAgentLogPost", () => {
     expect(rows[0]!.seq).toBe(42);
   });
 
-  it("sets CORS headers on the POST response", async () => {
+  it("echoes back the request's own Origin when it's on the allowlist", async () => {
     const res = await handleAgentLogPost(
-      postRequest({ feedKey: `test-feed-${crypto.randomUUID()}`, agentName: "a", agentRole: "r", actionType: "summary" }),
+      postRequest(
+        { feedKey: `test-feed-${crypto.randomUUID()}`, agentName: "a", agentRole: "r", actionType: "summary" },
+        true,
+        "https://mcp-relay-harness-dashboard.ybains-dev.workers.dev",
+      ),
       env,
     );
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://mcp-relay-harness-dashboard.ybains-dev.workers.dev");
+  });
+
+  it("omits Access-Control-Allow-Origin entirely for an origin not on the allowlist", async () => {
+    const res = await handleAgentLogPost(
+      postRequest({ feedKey: `test-feed-${crypto.randomUUID()}`, agentName: "a", agentRole: "r", actionType: "summary" }, true, "https://evil.example.com"),
+      env,
+    );
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 });
 
@@ -154,7 +167,7 @@ describe("handleAgentLogCounts", () => {
 
 describe("handleAgentLogPreflight", () => {
   it("answers an OPTIONS preflight without requiring auth", () => {
-    const res = handleAgentLogPreflight();
+    const res = handleAgentLogPreflight(new Request("https://x/api/agent-log", { method: "OPTIONS" }));
     expect(res.status).toBe(204);
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
   });

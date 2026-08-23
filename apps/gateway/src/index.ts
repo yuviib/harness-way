@@ -23,19 +23,19 @@ export default {
     }
     if (url.pathname === "/api/cache-log" || url.pathname === "/api/cache-log/stats") {
       if (request.method === "OPTIONS") {
-        return handleCacheLogPreflight();
+        return handleCacheLogPreflight(request);
       }
       return url.pathname.endsWith("/stats") ? handleCacheLogStats(request, env) : handleCacheLog(request, env);
     }
     if (url.pathname === "/api/delivery-log" || url.pathname === "/api/delivery-log/counts") {
       if (request.method === "OPTIONS") {
-        return handleDeliveryLogPreflight();
+        return handleDeliveryLogPreflight(request);
       }
       return url.pathname.endsWith("/counts") ? handleDeliveryLogCounts(request, env) : handleDeliveryLog(request, env);
     }
     if (url.pathname === "/api/agent-log" || url.pathname === "/api/agent-log/counts") {
       if (request.method === "OPTIONS") {
-        return handleAgentLogPreflight();
+        return handleAgentLogPreflight(request);
       }
       if (url.pathname.endsWith("/counts")) {
         return handleAgentLogCounts(request, env);
@@ -47,7 +47,7 @@ export default {
     }
     if (url.pathname === "/api/audit-log" || url.pathname === "/api/audit-log/verify") {
       if (request.method === "OPTIONS") {
-        return handleAuditLogPreflight();
+        return handleAuditLogPreflight(request);
       }
       if (url.pathname.endsWith("/verify")) {
         return handleAuditLogVerify(request, env);

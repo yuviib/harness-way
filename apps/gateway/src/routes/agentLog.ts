@@ -8,13 +8,8 @@
 // gateway, agent_log is written by external processes (the agents) over a
 // real HTTP call -- so this route needs a POST handler, not just GET.
 
+import { corsHeaders } from "../lib/cors";
 import { isAuthorized } from "./subscribe";
-
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
 
 const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 100;
@@ -30,33 +25,34 @@ interface AgentLogPost {
   detail?: string | null;
 }
 
-export function handleAgentLogPreflight(): Response {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
+export function handleAgentLogPreflight(request: Request): Response {
+  return new Response(null, { status: 204, headers: corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type") });
 }
 
 export async function handleAgentLogPost(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   let body: AgentLogPost;
   try {
     body = await request.json();
   } catch {
-    return new Response("Invalid JSON body", { status: 400, headers: CORS_HEADERS });
+    return new Response("Invalid JSON body", { status: 400, headers: cors });
   }
 
   const { feedKey, agentName, agentRole, actionType, seq, detail } = body;
   if (!feedKey || !agentName || !agentRole || !actionType) {
     return new Response("feedKey, agentName, agentRole, and actionType are required", {
       status: 400,
-      headers: CORS_HEADERS,
+      headers: cors,
     });
   }
   if (!VALID_ACTION_TYPES.has(actionType)) {
     return new Response(`actionType must be one of: ${[...VALID_ACTION_TYPES].join(", ")}`, {
       status: 400,
-      headers: CORS_HEADERS,
+      headers: cors,
     });
   }
 
@@ -66,7 +62,7 @@ export async function handleAgentLogPost(request: Request, env: Env): Promise<Re
     .bind(feedKey, agentName, agentRole, actionType, seq ?? null, detail ?? null, new Date().toISOString())
     .run();
 
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
+  return new Response(null, { status: 204, headers: cors });
 }
 
 // True per-action-type totals via COUNT(*), not however many rows a
@@ -74,8 +70,9 @@ export async function handleAgentLogPost(request: Request, env: Env): Promise<Re
 // and fixed for delivery_log (see deliveryLog.ts's own comment on this),
 // applied here from the start rather than rediscovered the same way.
 export async function handleAgentLogCounts(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   const url = new URL(request.url);
@@ -95,13 +92,14 @@ export async function handleAgentLogCounts(request: Request, env: Env): Promise<
 
   return new Response(JSON.stringify(counts), {
     status: 200,
-    headers: { "content-type": "application/json", ...CORS_HEADERS },
+    headers: { "content-type": "application/json", ...cors },
   });
 }
 
 export async function handleAgentLogGet(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   const url = new URL(request.url);
@@ -119,6 +117,6 @@ export async function handleAgentLogGet(request: Request, env: Env): Promise<Res
 
   return new Response(JSON.stringify(results), {
     status: 200,
-    headers: { "content-type": "application/json", ...CORS_HEADERS },
+    headers: { "content-type": "application/json", ...cors },
   });
 }

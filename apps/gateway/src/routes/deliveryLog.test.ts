@@ -16,9 +16,9 @@ async function seedRow(
     .run();
 }
 
-function authedRequest(query: string): Request {
+function authedRequest(query: string, origin?: string): Request {
   return new Request(`https://x/api/delivery-log${query}`, {
-    headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}` },
+    headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}`, ...(origin ? { Origin: origin } : {}) },
   });
 }
 
@@ -71,13 +71,18 @@ describe("handleDeliveryLog", () => {
     expect(rows).toHaveLength(5);
   });
 
-  it("sets CORS headers on the actual data response, not just preflight", async () => {
-    const res = await handleDeliveryLog(authedRequest("?feedKey=whatever"), env);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  it("echoes back the request's own Origin when it's on the allowlist, not just on preflight", async () => {
+    const res = await handleDeliveryLog(authedRequest("?feedKey=whatever", "https://mcp-relay-harness-dashboard.ybains-dev.workers.dev"), env);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://mcp-relay-harness-dashboard.ybains-dev.workers.dev");
+  });
+
+  it("omits Access-Control-Allow-Origin entirely for an origin not on the allowlist", async () => {
+    const res = await handleDeliveryLog(authedRequest("?feedKey=whatever", "https://evil.example.com"), env);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
   it("answers an OPTIONS preflight without requiring auth", () => {
-    const res = handleDeliveryLogPreflight();
+    const res = handleDeliveryLogPreflight(new Request("https://x/api/delivery-log", { method: "OPTIONS" }));
     expect(res.status).toBe(204);
     expect(res.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
   });
@@ -120,9 +125,9 @@ describe("handleDeliveryLogCounts", () => {
     expect(counts).toEqual({ event: 1, gap: 0, reconnect: 0 });
   });
 
-  it("sets CORS headers", async () => {
+  it("echoes back the request's own Origin when it's on the allowlist", async () => {
     const feedKey = `test-feed-${crypto.randomUUID()}`;
-    const res = await handleDeliveryLogCounts(authedRequest(`?feedKey=${feedKey}`), env);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    const res = await handleDeliveryLogCounts(authedRequest(`?feedKey=${feedKey}`, "https://fraud-ops-console.ybains-dev.workers.dev"), env);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://fraud-ops-console.ybains-dev.workers.dev");
   });
 });

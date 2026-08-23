@@ -11,13 +11,20 @@
 // that let a caller claim to be someone else would be worthless as an
 // audit log -- the one thing it has to guarantee is that "who did this"
 // is exactly who authenticated, not who the request merely says did.
+import { corsHeaders } from "../lib/cors";
 import { isAuthorized } from "./subscribe";
 
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
+// Generous relative to real usage (a real agent's JSON-encoded detail --
+// caseId, riskLevel, a one-sentence reasoning string, a signal count -- is
+// well under 500 characters in practice) but a real, enforced ceiling
+// regardless: any credential holder could otherwise write arbitrarily
+// large blobs into a single global, append-only DO instance with no other
+// cap on it. Rejected outright rather than silently truncated -- silently
+// storing less than what a caller submitted, with no indication anything
+// was cut, is exactly the kind of quiet data loss this whole project
+// exists to avoid elsewhere.
+const MAX_ACTION_LENGTH = 100;
+const MAX_DETAIL_LENGTH = 4000;
 
 // A single global instance -- see AuditLog.ts's own comment: sharding a
 // hash chain would only ever let "prove nothing was altered" apply to one
@@ -36,8 +43,8 @@ function auditLogStub(env: Env) {
   return env.AUDIT_LOG.get(id);
 }
 
-export function handleAuditLogPreflight(): Response {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
+export function handleAuditLogPreflight(request: Request): Response {
+  return new Response(null, { status: 204, headers: corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type") });
 }
 
 interface AuditLogPostBody {
@@ -46,44 +53,53 @@ interface AuditLogPostBody {
 }
 
 export async function handleAuditLogPost(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type");
   const auth = await isAuthorized(request, env);
   if (!auth.authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   let body: AuditLogPostBody;
   try {
     body = await request.json();
   } catch {
-    return new Response("Invalid JSON body", { status: 400, headers: CORS_HEADERS });
+    return new Response("Invalid JSON body", { status: 400, headers: cors });
   }
   if (!body.action || typeof body.action !== "string") {
-    return new Response("action (string) is required", { status: 400, headers: CORS_HEADERS });
+    return new Response("action (string) is required", { status: 400, headers: cors });
+  }
+  if (body.action.length > MAX_ACTION_LENGTH) {
+    return new Response(`action must be ${MAX_ACTION_LENGTH} characters or fewer`, { status: 400, headers: cors });
   }
   if (typeof body.detail !== "string") {
-    return new Response("detail (string) is required", { status: 400, headers: CORS_HEADERS });
+    return new Response("detail (string) is required", { status: 400, headers: cors });
+  }
+  if (body.detail.length > MAX_DETAIL_LENGTH) {
+    return new Response(`detail must be ${MAX_DETAIL_LENGTH} characters or fewer`, { status: 400, headers: cors });
   }
 
   const result = await auditLogStub(env).append({ agentId: auth.agentId, agentName: auth.agentName, action: body.action, detail: body.detail });
-  return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json", ...CORS_HEADERS } });
+  return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json", ...cors } });
 }
 
 export async function handleAuditLogGet(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
   const url = new URL(request.url);
   const requestedLimit = Number(url.searchParams.get("limit") ?? 100);
   const limit = Math.min(500, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 100));
 
   const entries = await auditLogStub(env).list(limit);
-  return new Response(JSON.stringify(entries), { status: 200, headers: { "content-type": "application/json", ...CORS_HEADERS } });
+  return new Response(JSON.stringify(entries), { status: 200, headers: { "content-type": "application/json", ...cors } });
 }
 
 export async function handleAuditLogVerify(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
   const result = await auditLogStub(env).verify();
-  return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json", ...CORS_HEADERS } });
+  return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json", ...cors } });
 }

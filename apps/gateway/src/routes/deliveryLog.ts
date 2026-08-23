@@ -15,28 +15,24 @@
 // dev server locally) making a cross-origin fetch() with an Authorization
 // header, which browsers preflight with OPTIONS -- unlike the WebSocket
 // upgrade on /subscribe, which browsers don't subject to CORS at all.
-// Access-Control-Allow-Origin: "*" is a dev-only simplification, the same
-// class of documented gap as SUBSCRIBE_TOKEN itself: a real deployment
-// should scope this to the dashboard's actual origin, not "*".
+// Access-Control-Allow-Origin is scoped to the real, known browser-based
+// consumers of this route via lib/cors.ts's allowlist, not "*" -- see that
+// file for the full reasoning.
 
+import { corsHeaders } from "../lib/cors";
 import { isAuthorized } from "./subscribe";
-
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Authorization",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-};
 
 const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 100;
 
-export function handleDeliveryLogPreflight(): Response {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
+export function handleDeliveryLogPreflight(request: Request): Response {
+  return new Response(null, { status: 204, headers: corsHeaders(request, "GET, OPTIONS", "Authorization") });
 }
 
 export async function handleDeliveryLog(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, OPTIONS", "Authorization");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   const url = new URL(request.url);
@@ -68,7 +64,7 @@ export async function handleDeliveryLog(request: Request, env: Env): Promise<Res
 
   return new Response(JSON.stringify(results), {
     status: 200,
-    headers: { "content-type": "application/json", ...CORS_HEADERS },
+    headers: { "content-type": "application/json", ...cors },
   });
 }
 
@@ -81,8 +77,9 @@ export async function handleDeliveryLog(request: Request, env: Env): Promise<Res
 // gap log rows"; it is NOT right for "how many gaps have there EVER been" --
 // those are two different questions needing two different queries.
 export async function handleDeliveryLogCounts(request: Request, env: Env): Promise<Response> {
+  const cors = corsHeaders(request, "GET, OPTIONS", "Authorization");
   if (!(await isAuthorized(request, env)).authorized) {
-    return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
+    return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
   const url = new URL(request.url);
@@ -102,6 +99,6 @@ export async function handleDeliveryLogCounts(request: Request, env: Env): Promi
 
   return new Response(JSON.stringify(counts), {
     status: 200,
-    headers: { "content-type": "application/json", ...CORS_HEADERS },
+    headers: { "content-type": "application/json", ...cors },
   });
 }
