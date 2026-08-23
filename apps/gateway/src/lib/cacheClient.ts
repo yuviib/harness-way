@@ -1,16 +1,18 @@
-// Typed I/O helpers for talking to a scope's ContextIndex Durable Object.
-// No protocol logic lives here (no auth, no origin-fetch, no hashing) --
-// that's routes/relay.ts's job; this file only knows how to shape a
-// request to the DO and parse its response, same division of labor as
+// Typed I/O helpers for talking to a scope's ContextIndex Durable Object,
+// via real RPC calls (ContextIndex has no WebSocket upgrade to justify a
+// fetch() handler, unlike FeedRelay). No protocol logic lives here (no
+// auth, no origin-fetch, no hashing) -- that's routes/relay.ts's job; this
+// file only knows how to route to the right DO instance and translate its
+// result into the caller-facing shape, same division of labor as
 // lib/metricsWriter.ts (D1 I/O, no policy) relative to do/FeedRelay.ts.
-import type { CacheEntry, LookupResult } from "../do/ContextIndex";
+import type { CacheEntry } from "../do/ContextIndex";
 
 export { type CacheEntry };
 
 // Richer than the DO's own LookupResult: `failedOpen` distinguishes "the
 // index was consulted and honestly reported no entry" (a genuine miss)
-// from "the index couldn't be consulted at all" (DO fetch threw, or
-// returned a non-OK status) -- both fall through to a real origin call in
+// from "the index couldn't be consulted at all" (the RPC call itself
+// threw) -- both fall through to a real origin call in
 // routes/relay.ts (see lookupCache below), but they are NOT the same event
 // and cache_log records them under different outcomes ('miss' vs
 // 'fail-open') specifically so a run of index failures is visible in the
@@ -29,15 +31,7 @@ function stubFor(env: Env, scope: string) {
 // error that takes a caller down.
 export async function lookupCache(env: Env, scope: string, requestHash: string): Promise<ClientLookupResult> {
   try {
-    const res = await stubFor(env, scope).fetch("https://context-index/lookup", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ requestHash }),
-    });
-    if (!res.ok) {
-      return { hit: false, failedOpen: true };
-    }
-    const result = (await res.json()) as LookupResult;
+    const result = await stubFor(env, scope).lookup(requestHash);
     return result.hit ? { hit: true, entry: result.entry } : { hit: false, failedOpen: false };
   } catch {
     return { hit: false, failedOpen: true };
@@ -58,12 +52,8 @@ export interface StoreCacheEntry {
 // (see routes/relay.ts's cache_log write), without ever throwing.
 export async function storeCache(env: Env, scope: string, entry: StoreCacheEntry): Promise<boolean> {
   try {
-    const res = await stubFor(env, scope).fetch("https://context-index/store", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(entry),
-    });
-    return res.ok;
+    await stubFor(env, scope).store(entry);
+    return true;
   } catch {
     return false;
   }

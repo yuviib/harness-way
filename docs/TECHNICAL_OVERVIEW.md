@@ -309,8 +309,11 @@ that could leak one scope's entry into another's lookup, a bug there would have 
 ### 4.3 Fail-open, precisely scoped
 
 Two distinct situations converge on the same behavior: a genuine miss (the index has never seen
-this request) and an index failure (the `ContextIndex` DO fetch throws or returns non-OK).
-`lib/cacheClient.ts`'s `lookupCache` never throws, both resolve to "nothing served from cache,"
+this request) and an index failure (the RPC call to `ContextIndex` throws). `ContextIndex` exposes
+`lookup`/`store` as real RPC methods, not a `fetch()` handler doing manual JSON routing, it never
+needs a WebSocket upgrade the way `FeedRelay` does, so there was no reason to round-trip through
+HTTP request/response parsing for what's really a typed function call. `lib/cacheClient.ts`'s
+`lookupCache` never throws, both resolve to "nothing served from cache,"
 logged under different `cache_log` outcomes (`miss` vs. `fail-open`) so a sustained run of index
 failures stays visible rather than blending into ordinary cold-cache traffic. `routes/relay.ts`
 always falls through to a real origin call in either case. What is not papered over: if the
@@ -460,7 +463,7 @@ self-consistent with what was actually sent.
 |---|---|---|
 | Rust SSE parser, replay buffer, BLAKE3 hashing | `cargo test` | 30/30 passing (includes the published BLAKE3 empty-input test vector, asserted as a known value) |
 | Rust engine | `cargo clippy --all-targets` | clean |
-| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 120/120 passing |
+| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 114/114 passing |
 | Gateway | `wrangler deploy --env production` | live on Cloudflare, 83.6 KiB / 31 KiB gzip, comfortably inside the Workers free-tier 3 MiB gzip cap |
 | Dashboard | `tsc -b` + `vite build` + `oxlint` | clean, deployed to Cloudflare Pages |
 | Agents | `tsc --noEmit` | clean |

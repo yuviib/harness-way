@@ -112,7 +112,7 @@ Every claim above has a check behind it, not just a design doc.
 |---|---|---|
 | Rust SSE parser, replay buffer, and BLAKE3 hashing | `cargo test` | 30/30 passing, including the published BLAKE3 empty-input test vector, asserted as a known value |
 | Rust engine | `cargo clippy --all-targets` | clean |
-| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 120/120 passing |
+| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 114/114 passing |
 | Gateway | `wrangler deploy --env production` | live on Cloudflare, 83.6 KiB / 31 KiB gzip, comfortably inside the Workers free-tier 3 MiB gzip cap |
 | Dashboard | `tsc -b` + `vite build` + `oxlint` | clean, deployed to Cloudflare Pages |
 | Agents | `tsc --noEmit` | clean |
