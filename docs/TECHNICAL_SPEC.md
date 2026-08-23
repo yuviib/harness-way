@@ -38,7 +38,7 @@ direct connection and the relay-backed one side by side. Building it forced two 
 into the relay itself — per-agent scoped credentials and a tamper-evident, hash-chained audit
 log — which now exist as general infrastructure, not features specific to Fraud Ops.
 
-Together: **2 repositories, 8 deployed Cloudflare services, 260 automated tests across 5 test
+Together: **2 repositories, 8 deployed Cloudflare services, 269 automated tests across 5 test
 frameworks and 3 languages, zero known unresolved high-confidence security findings** (per the audit
 in §12), and a full quantitative performance profile measured against live production
 infrastructure, not a staging environment.
@@ -105,7 +105,7 @@ volumes exercised in testing and demoing:
 | Resource | Free tier limit | Actual usage (measured) |
 |---|---|---|
 | Workers requests | 100,000/day per account | Load test in §9.3 used ~340 requests total across all scenarios |
-| Workers bundle size (gzip) | 3 MiB | Gateway: 32.8 KiB (1.1% of cap) — see §8.8 |
+| Workers bundle size (gzip) | 3 MiB | Gateway: 33.18 KiB (1.08% of cap) — see §8.8 |
 | D1 storage | 5 GB | 4 tables, append-only logs, negligible at demo scale |
 | Durable Objects requests | 1,000,000/day (paid) / included in Workers free tier for compute | Not a bottleneck at any scale tested |
 
@@ -369,6 +369,13 @@ CREATE TABLE entries (
 resolved credential (§5.7). An audit log that let a caller claim to be someone else would be
 worthless as an audit log.
 
+**`action`/`detail` have real, enforced length caps** at the HTTP route layer (`routes/auditLog.ts`,
+100 and 4,000 characters respectively) — rejected outright with a real `400`, never silently
+truncated, since silently storing less than a caller submitted with no indication anything was cut
+is exactly the kind of quiet data loss this whole project exists to avoid elsewhere. Any valid
+credential holder could otherwise write arbitrarily large blobs into the single global, append-only
+DO instance with nothing else bounding it.
+
 ### 5.5 Rust/WASM engine
 
 **Crate:** `crates/mcp-relay-engine`, 680 lines across 4 files, 30 unit tests, `cargo clippy
@@ -540,10 +547,18 @@ if-statement pretending to be one.
   restored, rather than overwriting), `assessment`, `decision`.
 - Five nodes reached by a real conditional edge: `ingestSignal` → `assessRisk` → one of
   `escalate`/`clear`/`monitor`.
-- `MemorySaver` checkpointer, keyed by `caseId` as the LangGraph `thread_id` — a case's accumulated
-  signal history genuinely persists across separate signal-arrival events instead of reasoning blind
-  each time. **Stated scope cut, not glossed over:** in-process only, not durable across an agent
-  restart.
+- A persisted checkpointer, keyed by `caseId` as the LangGraph `thread_id` — a case's accumulated
+  signal history genuinely persists across separate signal-arrival events, and across a real process
+  restart. Production wires in `@langchain/langgraph-checkpoint-sqlite`'s `SqliteSaver`, backed by a
+  real gitignored file on disk (`CHECKPOINT_DB_PATH`); the officially-maintained implementation was
+  chosen over hand-rolling a custom `BaseCheckpointSaver` against `node:sqlite` (which the runtime
+  supports natively, no native compile step) because that interface's writes/versions/parent-chain
+  contract carries real correctness risk to reimplement for no benefit over the maintained one.
+  Verified directly, not assumed: a case's state was written, the writing process's `SqliteSaver`
+  instance discarded entirely, then a brand-new instance opened against the same file — the next
+  invocation resumed with the full prior history intact. Tests keep the previous `MemorySaver`
+  default (fast, isolated, no disk writes) via the same injectable-checkpointer parameter that lets
+  production override it.
 - Routing policy (`routeByRisk`): `high` risk escalates unconditionally; `medium` escalates once 3+
   signals have accumulated; `low` clears once 4+ signals have accumulated with no escalation; anything
   else stays `monitor`.
@@ -752,10 +767,11 @@ allowlisted host.
 
 | Service | Bundle size (gzip) | % of 3 MiB Workers cap |
 |---|---|---|
-| Gateway | 32.8 KiB | 1.07% |
+| Gateway | 33.18 KiB | 1.08% |
 | Fraud Ops console | 66.3 KiB (66.22 KiB build output confirmed) | 2.16% |
 
-Real dry-run output, gateway: `Total Upload: 91.58 KiB / gzip: 32.75 KiB`, with bindings resolved as
+Real live deploy output, gateway, after adding the CORS allowlist and audit-log length caps:
+`Total Upload: 93.10 KiB / gzip: 33.18 KiB`, with bindings resolved as
 `FEED_RELAY`/`CONTEXT_INDEX`/`AUDIT_LOG` (Durable Objects), `DB` (D1), `ORIGIN_SIMULATOR`/
 `FRAUD_OPS_ORIGIN` (service bindings), `RATE_LIMITER` (unsafe/ratelimit metadata), plus three
 environment variables.
@@ -907,13 +923,13 @@ tests or standing up a heavier integration harness than the logic warrants.
 
 | Suite | Framework | Runtime | Count | What it proves |
 |---|---|---|---|---|
-| Gateway | Vitest | Real `workerd` (`@cloudflare/vitest-pool-workers`) | **144/144** | Multiplexing, replay, gap marking, credential scoping, hash-chain tamper detection, rate limiting logic |
+| Gateway | Vitest | Real `workerd` (`@cloudflare/vitest-pool-workers`) | **153/153** | Multiplexing, replay, gap marking, credential scoping, hash-chain tamper detection, rate limiting logic, CORS allowlisting, audit-log length caps |
 | Rust engine | `cargo test` | Native | **30/30** | SSE chunk-boundary parsing, ring buffer, BLAKE3 (incl. published test vector) |
 | Chaos harness | `pytest` | Native, drives real processes | **28/28** (1 deselected — requires live infra) | No silent gaps, no duplicate/out-of-order sequences across real kill/reconnect scenarios |
 | Fraud Ops agents | Node's native test runner | Native, `fetch` stubbed | **16/16** | Graph routing thresholds, checkpointer isolation, retry-then-succeed, fallback cascade order/timing |
 | Fraud Ops origin | Vitest | Real `workerd` | **14/14** | Deterministic generation math, business-rule bounds across a full cycle, real HTTP/outage behavior |
 | Fraud Ops console | Vitest | Node, no DOM | **28/28** | SSE parsing (incl. cross-chunk reassembly), gap-jump math, severity bands, stale-verify detection |
-| **Total** | | | **260/260** | |
+| **Total** | | | **269/269** | |
 
 Plus three real, recorded chaos-engineering runs against live infrastructure (not simulated):
 `upstream-outage` (68 messages, 0 violations), `upstream-outage` (64 messages, 0 violations),
@@ -972,11 +988,14 @@ possible (downloading and grepping the actual deployed bundle, tracing the actua
 - `buildFeedKey`'s use of `JSON.stringify([originUrl, category])` (rather than string concatenation)
   was confirmed to prevent feed-key collisions between different `(originUrl, category)` pairs.
 
-**Two items noted, deliberately not reported as findings, both for stated reasons**: the
-`Access-Control-Allow-Origin: "*"` on the log/audit read routes is a pre-existing, already-documented
-gap in the code's own comments, not something newly introduced in this pass, and auth is still
-required regardless of CORS policy; the audit log's `detail` field has no length bound, which is a
-resource-exhaustion concern explicitly excluded from this project's own review criteria.
+**Two items noted at the time of the original audit, deliberately not reported as findings, and
+since closed rather than left as accepted debt**: `Access-Control-Allow-Origin: "*"` on the log/audit
+routes has been replaced with a real allowlist (`lib/cors.ts`) reflecting the request's own Origin
+only when it matches the dashboard, the console, or their shared local dev port — verified live
+against production for both an allowed and a disallowed origin. The audit log's `detail` field now
+has a real, enforced cap (4,000 characters; `action` gets 100), rejected outright rather than
+silently truncated — verified live against production that a 4,001-character `detail` is correctly
+rejected with a real `400`.
 
 ---
 
@@ -986,14 +1005,17 @@ Every number used anywhere in this document, in one place, with how it was obtai
 
 | Metric | Value | How measured |
 |---|---|---|
-| Gateway test suite | 144/144 passing | `npx vitest run` against real `workerd`, re-run fresh for this document |
+| Gateway test suite | 153/153 passing | `npx vitest run` against real `workerd` (144 original + 9 covering the CORS allowlist and audit-log length caps added after this document's first pass) |
 | Rust engine test suite | 30/30 passing | `cargo test`, re-run fresh for this document |
 | Chaos harness test suite | 28/28 passing (1 deselected) | `uv run pytest`, re-run fresh for this document |
 | Fraud Ops agents test suite | 16/16 passing | `node --test`, real graph + stubbed fallback chain |
 | Fraud Ops origin test suite | 14/14 passing | Real `workerd`, `@cloudflare/vitest-pool-workers` |
 | Fraud Ops console test suite | 28/28 passing | Vitest, pure-function extraction, no DOM |
-| **Total automated tests** | **260** | Sum of the above |
-| Gateway bundle size | 91.58 KiB / 32.75 KiB gzip | `wrangler deploy --dry-run --env production`, live dry-run |
+| **Total automated tests** | **269** | Sum of the above |
+| Audit log `detail` field cap | 4,000 characters, rejected outright above it | `auditLog.ts`, `MAX_DETAIL_LENGTH`, live-verified against production |
+| Audit log `action` field cap | 100 characters | `auditLog.ts`, `MAX_ACTION_LENGTH` |
+| CORS allowlist size (log/audit routes) | 4 origins (dashboard, console, 2 local dev variants) | `lib/cors.ts`, `ALLOWED_CORS_ORIGINS` |
+| Gateway bundle size | 93.10 KiB / 33.18 KiB gzip | Real live deploy output, `--env production` |
 | Fraud Ops console bundle | 213.4 KB / 66.34 KB gzip | `npm run build` output |
 | Cache speedup (Capability 2) | ~14× | `cacheSharingAgent.ts` live run vs. real 250ms artificial origin latency |
 | `/api/audit-log` read latency (concurrency 20) | p50 106ms, p90 227ms, p99 316ms | Live load test, production gateway, 100 requests |
@@ -1040,16 +1062,14 @@ Stated explicitly, ranked roughly by what would matter most at real production s
 3. **The two OpenRouter fallback models' real completion quality is unverified** — their IDs are
    confirmed real, the fallback mechanism is verified with stubbed calls, but neither has produced a
    real live completion under real conditions yet (§6.2).
-4. **The LangGraph checkpointer is in-process only** (`MemorySaver`), not durable across an agent
-   restart — a real production version would back this with a persisted checkpointer.
-5. **The legacy shared-token auth model still exists** alongside real per-agent credentials, not yet
+4. **The legacy shared-token auth model still exists** alongside real per-agent credentials, not yet
    fully retired — any caller still using `SUBSCRIBE_TOKEN` gets none of the new accountability
    properties.
-6. **`Access-Control-Allow-Origin: "*"`** on the read/write log and audit routes is a real, if
-   low-severity, gap — a production deployment should scope this to the dashboard/console's actual
-   origin.
-7. **The audit log's `detail` field has no length bound** — a valid credential holder could write
-   arbitrarily large blobs, a resource-exhaustion-adjacent concern.
+
+Three further items from this list's first pass have since been closed rather than left as accepted
+debt: the checkpointer is now backed by a real `SqliteSaver` (§6.2), `Access-Control-Allow-Origin`
+is now a real allowlist (§5.1, §12.2), and the audit log's `detail`/`action` fields now have real,
+enforced length caps (§5.4, §12.2) — each verified live against production, not just in tests.
 
 ---
 
