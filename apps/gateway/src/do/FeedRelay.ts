@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { buildFeedKey } from "../lib/feedKey";
+import { fetchOrigin } from "../lib/fetchOrigin";
 import { logDelivery } from "../lib/metricsWriter";
 import { WasmSseParser } from "../lib/wasmEngine";
 
@@ -276,7 +277,7 @@ export class FeedRelay extends DurableObject<Env> {
   ): Promise<{ outcome: "intentional-teardown" | "ended-unexpectedly"; establishedConnection: boolean }> {
     let res: Response;
     try {
-      res = await fetch(originUrl, {
+      res = await fetchOrigin(this.env, originUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -348,32 +349,45 @@ export class FeedRelay extends DurableObject<Env> {
     let attempt = 0;
 
     for (;;) {
-      const result = await this.connectOnce(originUrl, category);
+      // A long-lived background loop (kicked off via ctx.waitUntil()) can
+      // hit an exception outside connectOnce's own try/catches -- observed
+      // live as a repeating uncaught error during an extended outage.
+      // Treat it the same as an ordinary failed connection attempt rather
+      // than let it silently end the loop subscribers depend on.
+      try {
+        const result = await this.connectOnce(originUrl, category);
 
-      if (result.outcome === "intentional-teardown") {
-        this.upstreamStarted = false;
-        // See the comment on the other reset below -- same reasoning:
-        // the feed is fully stopping, and a future subscriber restarting
-        // it must not inherit a stale "already told you about a drop"
-        // flag from a completely different subscriber's outage.
-        this.outageSignaled = false;
-        return;
-      }
+        if (result.outcome === "intentional-teardown") {
+          this.upstreamStarted = false;
+          // See the comment on the other reset below -- same reasoning:
+          // the feed is fully stopping, and a future subscriber restarting
+          // it must not inherit a stale "already told you about a drop"
+          // flag from a completely different subscriber's outage.
+          this.outageSignaled = false;
+          return;
+        }
 
-      if (result.establishedConnection) {
-        // "reconnect" logging and outageSignaled's reset already happened
-        // inside connectOnce, right when the connection established --
-        // not here, since waiting for connectOnce to RETURN would mean a
-        // connection that recovers and then just stays up (the common
-        // case) never gets logged as a reconnect at all.
-        attempt = 0;
+        if (result.establishedConnection) {
+          // "reconnect" logging and outageSignaled's reset already happened
+          // inside connectOnce, right when the connection established --
+          // not here, since waiting for connectOnce to RETURN would mean a
+          // connection that recovers and then just stays up (the common
+          // case) never gets logged as a reconnect at all.
+          attempt = 0;
+        }
+      } catch (err) {
+        console.error(`FeedRelay connectUpstream: unexpected error, treating as a failed connection attempt (feed ${this.feedKey ?? "unknown"})`, err);
       }
 
       // Per the MCP spec revision, a broken response stream unconditionally
       // loses whatever was in flight -- there's no way to know whether
       // anything was actually missed, so this signals regardless of how
       // quickly the reconnect below succeeds. Same "never silence"
-      // principle as the buffer-eviction gap in sendReplay.
+      // principle as the buffer-eviction gap in sendReplay. Also the path
+      // taken for the unexpected-error case caught above -- from a
+      // subscriber's perspective, an unclassified failure and an ordinary
+      // dropped connection both mean the exact same thing: something may
+      // have been missed.
       if (!this.outageSignaled) {
         this.broadcastGap();
         this.logDeliveryAsync("gap", this.nextSeq, "upstream-drop");

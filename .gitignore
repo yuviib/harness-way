@@ -15,6 +15,12 @@ worker-configuration.d.ts
 # Wrangler local dev state
 .wrangler/
 
+# Wrangler's local-only var overrides -- read by `wrangler dev` alone, never
+# uploaded by `wrangler deploy`. Holds SUBSCRIBE_TOKEN's dev-only value now
+# that a real deployment needs the same binding name as a real secret
+# (`wrangler secret put`), and a var and a secret can't share one name.
+.dev.vars
+
 # TypeScript incremental build cache
 *.tsbuildinfo
 
@@ -27,3 +33,7 @@ __pycache__/
 
 # Editor/OS
 .DS_Store
+
+# Local design-tool bookkeeping, not part of the project
+.hallmark/
+design.md

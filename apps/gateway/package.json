@@ -7,9 +7,9 @@
     "build:wasm": "wasm-pack build ../../crates/mcp-relay-engine --target bundler --out-dir ../../apps/gateway/src/wasm",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply mcp-relay-harness-delivery-log --local",
-    "db:migrate:remote": "wrangler d1 migrations apply mcp-relay-harness-delivery-log --remote",
+    "db:migrate:remote": "wrangler d1 migrations apply mcp-relay-harness-delivery-log --remote --env production",
     "dev": "npm run db:migrate:local && wrangler dev",
-    "deploy": "npm run db:migrate:remote && wrangler deploy",
+    "deploy": "npm run db:migrate:remote && wrangler deploy --env production",
     "test": "vitest run"
   },
   "devDependencies": {

@@ -154,7 +154,7 @@ export function GapAudit({ settings }: { settings: GatewaySettings }) {
       <div className="rounded-card border border-rule p-4">
         <h2 className="text-sm font-medium text-ink">Event throughput</h2>
         <p className="mt-0.5 text-xs text-muted">
-          Delivered events per 15s bucket, most recent {THROUGHPUT_WINDOW} events — a trend window, not the all-time total.
+          Delivered events per 15s bucket, most recent {THROUGHPUT_WINDOW} events, a trend window, not the all-time total.
         </p>
         <div className="mt-3">
           <AreaChart

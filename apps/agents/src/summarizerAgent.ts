@@ -30,7 +30,14 @@ const DEFAULT_MODEL = "gemini-flash-latest";
 // dodge one model's own limit -- the sibling project's own code comment
 // states that distinction explicitly, and it's kept here too: a chain of
 // models under one key, never a chain of keys.
-const GEMINI_FALLBACK_MODELS = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemma-4-31b-it"] as const;
+// `gemma-4-31b-it` was dropped from this chain (2026-08-21): unlike the
+// Gemini-branded models above, it doesn't reliably follow the "one sentence,
+// no preamble" instruction against this endpoint -- observed live, dumping a
+// full chain-of-thought ("Draft 1... Draft 2... Wait, let's check...") into
+// the summary instead of just the answer. Not swapped for another unverified
+// name, per this file's own discipline above: only models re-checked live
+// against a real key belong in this chain.
+const GEMINI_FALLBACK_MODELS = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite"] as const;
 
 // Builds the actual chain to try: the configured (or default) model first,
 // then every fallback not already equal to it -- so setting GEMINI_MODEL to
@@ -118,7 +125,22 @@ async function callGemini(apiKey: string, model: string, prompt: string): Promis
   if (!text) {
     throw new Error("Gemini API response had no candidate text");
   }
-  return text.trim();
+  return extractFinalSentence(text);
+}
+
+// Defense in depth against ANY model (present or future) that ignores the
+// prompt's "no preamble" instruction and returns visible reasoning ahead of
+// its answer: every real example of that seen from this endpoint still ended
+// with the clean final sentence as its last non-blank line, so that's the
+// one thing worth trusting over the raw response. A well-behaved model's
+// single-sentence reply is unaffected -- last line of one line is a no-op.
+function extractFinalSentence(raw: string): string {
+  const lines = raw
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  return (lines[lines.length - 1] ?? raw.trim()).replace(/^(final( choice| string)?|answer)\s*:\s*/i, "");
 }
 
 export interface SummaryResult {
@@ -185,7 +207,7 @@ async function callGroq(apiKey: string, prompt: string): Promise<string> {
   if (!text) {
     throw new Error("Groq API response had no choice content");
   }
-  return text.trim();
+  return extractFinalSentence(text);
 }
 
 // Full pipeline for one notification: the whole Gemini model chain first,

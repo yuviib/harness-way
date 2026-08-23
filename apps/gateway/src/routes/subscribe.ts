@@ -12,6 +12,15 @@ export { buildFeedKey };
 // length digest before comparing removes both that and any length-based
 // signal on the raw secret.
 export async function isAuthorized(request: Request, env: Env): Promise<boolean> {
+  // Fail closed on a missing token: `TextEncoder.encode(undefined)` hashes
+  // identically to `encode("")`, so without this guard, an unset
+  // SUBSCRIBE_TOKEN (e.g. `wrangler secret put` run against the wrong
+  // environment) would silently authorize any caller sending zero
+  // credentials rather than reject them. Found by security review, verified
+  // by testing.
+  if (!env.SUBSCRIBE_TOKEN) {
+    return false;
+  }
   const auth = request.headers.get("Authorization");
   // Query-param fallback exists for exactly one real reason: browsers'
   // native WebSocket constructor cannot set an Authorization header on the
@@ -41,6 +50,31 @@ export async function isAuthorized(request: Request, env: Env): Promise<boolean>
   return diff === 0;
 }
 
+// Real Workers Rate Limiting binding (see wrangler.toml), not a hand-rolled
+// counter. `routeKey` keeps /subscribe and /relay in independent buckets on
+// one shared binding. The timeout+fail-open below exists because this
+// binding runs in "remote" mode under local `wrangler dev` and hangs
+// (doesn't error) without real Cloudflare auth -- same fail-open principle
+// as ContextIndex's cache lookup, applied here so an infra hiccup degrades
+// availability, not blocks real requests.
+const RATE_LIMIT_TIMEOUT_MS = 500;
+
+export async function isRateLimited(request: Request, env: Env, routeKey: "subscribe" | "relay"): Promise<boolean> {
+  // CF-Connecting-IP is the real per-client signal; absent in local dev, so
+  // this falls back to the shared token -- same trust boundary as
+  // SUBSCRIBE_TOKEN itself, not a weaker one.
+  const clientKey = request.headers.get("CF-Connecting-IP") ?? env.SUBSCRIBE_TOKEN;
+  try {
+    const outcome = await Promise.race([
+      env.RATE_LIMITER.limit({ key: `${routeKey}:${clientKey}` }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("rate limiter timed out")), RATE_LIMIT_TIMEOUT_MS)),
+    ]);
+    return !outcome.success;
+  } catch {
+    return false;
+  }
+}
+
 // `originUrl` is attacker-controlled input from any caller holding the
 // (weak, shared) token above -- passing it unchecked into the Worker's own
 // `fetch()` inside FeedRelay would be a real SSRF vector: arbitrary outbound
@@ -68,6 +102,9 @@ export function isAllowedOrigin(originUrl: string, allowedHostsCsv: string): boo
 export async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
     return new Response("Unauthorized", { status: 401 });
+  }
+  if (await isRateLimited(request, env, "subscribe")) {
+    return new Response("Too many subscribe attempts, slow down", { status: 429 });
   }
 
   const url = new URL(request.url);

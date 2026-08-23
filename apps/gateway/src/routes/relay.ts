@@ -19,8 +19,9 @@
 import { lookupCache, storeCache } from "../lib/cacheClient";
 import { logCacheAccess } from "../lib/cacheLog";
 import { buildRequestHash } from "../lib/cacheKey";
+import { fetchOrigin } from "../lib/fetchOrigin";
 import { blake3Hex } from "../lib/wasmEngine";
-import { isAllowedOrigin, isAuthorized } from "./subscribe";
+import { isAllowedOrigin, isAuthorized, isRateLimited } from "./subscribe";
 
 interface RelayRequestBody {
   originUrl?: string;
@@ -49,6 +50,9 @@ async function logCacheAccessBestEffort(env: Env, entry: Parameters<typeof logCa
 export async function handleRelay(request: Request, env: Env): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
     return new Response("Unauthorized", { status: 401 });
+  }
+  if (await isRateLimited(request, env, "relay")) {
+    return new Response("Too many relay calls, slow down", { status: 429 });
   }
 
   let body: RelayRequestBody;
@@ -113,7 +117,7 @@ export async function handleRelay(request: Request, env: Env): Promise<Response>
   const originStart = Date.now();
   let originRes: Response;
   try {
-    originRes = await fetch(originUrl, {
+    originRes = await fetchOrigin(env, originUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),

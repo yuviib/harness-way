@@ -58,7 +58,7 @@ export function SettingsPanel({
         {field("category", "Category")}
       </div>
       <p className="mt-3 border-t border-rule pt-3 text-[11px] leading-relaxed text-muted">
-        Stored only in this browser's localStorage — never baked into the deployed dashboard build.
+        Stored only in this browser's localStorage, never baked into the deployed dashboard build.
       </p>
     </div>
   );

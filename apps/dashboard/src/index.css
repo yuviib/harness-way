@@ -41,6 +41,13 @@
   --radius-control: 6px;
   --radius-card: 10px;
 
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --dur-long: 420ms;
+
   --z-index-base: 1;
   --z-index-raised: 10;
   --z-index-dropdown: 100;

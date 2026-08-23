@@ -25,9 +25,40 @@ const MAX_LATENCY_SAMPLES = 20;
 interface LogLine {
   at: string;
   raw: string;
+  kind: "event" | "gap" | "replay" | "unknown";
+  headline: string;
+  seq?: number;
 }
 
-function useSubscriber(wsUrl: string | null, onStateChange: (state: ConnState) => void) {
+// Turns the raw wire message into one scannable line instead of a dumped
+// JSON blob -- the full raw payload is still one click away (see the <details>
+// in SubscriberPane), this just decides what's worth reading at a glance.
+function describeMessage(raw: string): Omit<LogLine, "at" | "raw"> {
+  try {
+    const msg = JSON.parse(raw) as Record<string, unknown>;
+    if (msg.type === "event" && typeof msg.seq === "number") {
+      const category = typeof msg.event === "string" ? msg.event.replace(/_/g, " ") : "event";
+      return { kind: "event", headline: category.charAt(0).toUpperCase() + category.slice(1), seq: msg.seq };
+    }
+    if (msg.type === "gap" && typeof msg.oldestAvailableSeq === "number") {
+      return { kind: "gap", headline: `Gap, resync from seq ${msg.oldestAvailableSeq}` };
+    }
+    if (msg.type === "replay" && Array.isArray(msg.events)) {
+      const n = msg.events.length;
+      return { kind: "replay", headline: `Replayed ${n} event${n === 1 ? "" : "s"}` };
+    }
+  } catch {
+    // Non-JSON or unrecognized shape -- fall through to the honest default
+    // below rather than guessing.
+  }
+  return { kind: "unknown", headline: "Unrecognized message" };
+}
+
+function useSubscriber(
+  wsUrl: string | null,
+  onStateChange: (state: ConnState) => void,
+  onEvent: (seq: number) => void,
+) {
   const [state, setState] = useState<ConnState>("idle");
   const [lines, setLines] = useState<LogLine[]>([]);
   const [interArrivalMs, setInterArrivalMs] = useState<number[]>([]);
@@ -64,11 +95,18 @@ function useSubscriber(wsUrl: string | null, onStateChange: (state: ConnState) =
       lastMessageAt.current = now;
 
       const raw = typeof evt.data === "string" ? evt.data : "[binary]";
-      setLines((prev) => [{ at: new Date().toLocaleTimeString(), raw }, ...prev].slice(0, MAX_LOG_LINES));
+      const described = describeMessage(raw);
+      setLines((prev) => [{ at: new Date().toLocaleTimeString(), raw, ...described }, ...prev].slice(0, MAX_LOG_LINES));
+
+      // Topology motion is driven off this, not a timer -- a pulse only ever
+      // travels an edge because a real "event" message actually crossed it.
+      if (described.kind === "event" && described.seq !== undefined) {
+        onEvent(described.seq);
+      }
     });
 
     return () => ws.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `report` is stable per subscriber index via useCallback in the parent
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `report`/`onEvent` are stable per subscriber index via useCallback in the parent
   }, [wsUrl]);
 
   return { state, lines, interArrivalMs };
@@ -78,12 +116,14 @@ function SubscriberPane({
   label,
   wsUrl,
   onStateChange,
+  onEvent,
 }: {
   label: string;
   wsUrl: string | null;
   onStateChange: (state: ConnState) => void;
+  onEvent: (seq: number) => void;
 }) {
-  const { state, lines, interArrivalMs } = useSubscriber(wsUrl, onStateChange);
+  const { state, lines, interArrivalMs } = useSubscriber(wsUrl, onStateChange, onEvent);
   const avgLatency = interArrivalMs.length > 0 ? interArrivalMs.reduce((a, b) => a + b, 0) / interArrivalMs.length : null;
 
   return (
@@ -105,11 +145,29 @@ function SubscriberPane({
 
       <div className="max-h-[280px] overflow-y-auto px-3.5 py-2.5">
         {lines.length === 0 && <div className="text-xs text-muted">No messages yet.</div>}
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2">
           {lines.map((l, i) => (
             <div key={i} className="text-xs leading-relaxed">
-              <span className="mr-1.5 font-mono text-muted">{l.at}</span>
-              <span className="break-all font-mono text-ink-2">{l.raw.slice(0, 160)}</span>
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{
+                    background:
+                      l.kind === "gap"
+                        ? "var(--color-status-warning)"
+                        : l.kind === "event"
+                          ? "var(--color-status-good)"
+                          : "var(--color-muted)",
+                  }}
+                />
+                <span className="font-mono text-muted">{l.at}</span>
+                <span className="text-ink-2">{l.headline}</span>
+                {l.seq !== undefined && <span className="ml-auto shrink-0 font-mono tabular text-muted">seq {l.seq}</span>}
+              </div>
+              <details className="ml-3 mt-0.5">
+                <summary className="cursor-pointer text-[10px] text-muted select-none">raw</summary>
+                <div className="mt-0.5 break-all font-mono text-[10px] text-muted">{l.raw.slice(0, 300)}</div>
+              </details>
             </div>
           ))}
         </div>
@@ -121,6 +179,14 @@ function SubscriberPane({
 export function LiveFanoutView({ settings }: { settings: GatewaySettings }) {
   const [connected, setConnected] = useState(false);
   const [subStates, setSubStates] = useState<ConnState[]>(Array(SUBSCRIBER_COUNT).fill("idle"));
+  const [subPulses, setSubPulses] = useState<number[]>(Array(SUBSCRIBER_COUNT).fill(0));
+  const [originPulse, setOriginPulse] = useState(0);
+  // All subscribers on this feed receive the identical seq from the same
+  // upstream event (that's the whole correctness property this view proves)
+  // -- so the origin->relay hop pulses once per distinct seq, not once per
+  // subscriber delivery, even though up to SUBSCRIBER_COUNT messages arrive
+  // for it.
+  const seenSeqs = useRef<Set<number>>(new Set());
 
   const buildUrl = useCallback(() => {
     const params = new URLSearchParams({
@@ -150,6 +216,28 @@ export function LiveFanoutView({ settings }: { settings: GatewaySettings }) {
     [],
   );
 
+  const makeEventHandler = useCallback(
+    (index: number) => (seq: number) => {
+      setSubPulses((prev) => {
+        const next = [...prev];
+        next[index] = (next[index] ?? 0) + 1;
+        return next;
+      });
+      if (!seenSeqs.current.has(seq)) {
+        seenSeqs.current.add(seq);
+        setOriginPulse((n) => n + 1);
+      }
+    },
+    [],
+  );
+
+  const handleConnectedToggle = useCallback(() => {
+    setConnected((c) => !c);
+    seenSeqs.current = new Set();
+    setSubPulses(Array(SUBSCRIBER_COUNT).fill(0));
+    setOriginPulse(0);
+  }, []);
+
   // Relay's own state is derived: "open" once at least one subscriber has a
   // live upstream fan-out reaching it, "connecting" while any are still
   // handshaking, "idle" otherwise -- it doesn't have its own WebSocket, so
@@ -172,7 +260,7 @@ export function LiveFanoutView({ settings }: { settings: GatewaySettings }) {
         </div>
         <button
           type="button"
-          onClick={() => setConnected((c) => !c)}
+          onClick={handleConnectedToggle}
           className="shrink-0 rounded-control px-4 py-2 text-sm font-medium transition-colors"
           style={
             connected
@@ -185,9 +273,16 @@ export function LiveFanoutView({ settings }: { settings: GatewaySettings }) {
       </div>
 
       <div className="rounded-card border border-rule p-4">
-        <h2 className="text-sm font-medium text-ink">Topology</h2>
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 className="text-sm font-medium text-ink">Topology</h2>
+          <span className="font-mono text-xs tabular text-muted">
+            <span className="text-ink font-medium">1</span> upstream connection ·{" "}
+            <span className="text-ink font-medium">{subStates.filter((s) => s === "open").length}</span> live subscriber
+            {subStates.filter((s) => s === "open").length === 1 ? "" : "s"}
+          </span>
+        </div>
         <p className="mt-0.5 text-xs text-muted">
-          One real upstream connection, multiplexed live to every connected subscriber below — each node's state is
+          One real upstream connection, multiplexed live to every connected subscriber below. Each node's state is
           its actual current status, not a blanket toggle.
         </p>
         <div className="mt-2">
@@ -195,13 +290,21 @@ export function LiveFanoutView({ settings }: { settings: GatewaySettings }) {
             origin={{ label: "Origin", sub: "origin-simulator", state: relayState }}
             relay={{ label: "FeedRelay", sub: "Durable Object", state: relayState }}
             subscribers={subStates.map((state, i) => ({ label: `Sub ${i + 1}`, sub: "browser WS", state }))}
+            originPulse={originPulse}
+            subscriberPulses={subPulses}
           />
         </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {(connected ? urls : Array.from({ length: SUBSCRIBER_COUNT }, () => null)).map((url, i) => (
-          <SubscriberPane key={i} label={`Subscriber ${i + 1}`} wsUrl={url} onStateChange={makeStateSetter(i)} />
+          <SubscriberPane
+            key={i}
+            label={`Subscriber ${i + 1}`}
+            wsUrl={url}
+            onStateChange={makeStateSetter(i)}
+            onEvent={makeEventHandler(i)}
+          />
         ))}
       </div>
     </div>

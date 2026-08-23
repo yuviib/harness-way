@@ -13,16 +13,47 @@ compatibility_flags = ["nodejs_compat"]
 [dev]
 port = 8787
 
-# Dev-only value -- real deployments must override via `wrangler secret put`,
-# never a plaintext var. This is the "known gap, noted not hidden" baseline
-# documented in src/types.ts.
+# SUBSCRIBE_TOKEN moved out of here and into .dev.vars (gitignored, local-
+# dev-only, read by `wrangler dev` alone): a real deployment sets it via
+# `wrangler secret put SUBSCRIBE_TOKEN` instead, and Cloudflare refuses to
+# let a var and a secret share one binding name -- confirmed by testing,
+# not assumed (`wrangler deploy` rejected it outright, error code 10053,
+# the one time this was tried the naive way). This is still the same
+# "known gap, noted not hidden" baseline documented in subscribe.ts: a
+# shared bearer token either way, just no longer a value anyone can read
+# straight out of version control.
 [vars]
-SUBSCRIBE_TOKEN = "dev-only-shared-secret"
 # Allowlist of origin hosts FeedRelay is permitted to open an upstream
 # connection to -- NOT a "known gap" like the token above, this is an actual
 # enforced boundary against SSRF. Real deployments add each legitimate
 # origin's host explicitly; never set this to "*" or leave it unset.
-ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794"
+# The real deployed origin-simulator host is included alongside the local
+# dev entries (not replacing them) so this one file still works for both
+# `wrangler dev` and `wrangler deploy` without editing it per-environment.
+ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794,mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+# Read by lib/fetchOrigin.ts to decide when the ORIGIN_SIMULATOR service
+# binding (declared under [env.production] below) applies, vs. the normal
+# fetch() path for every other allowlisted origin. Kept as its own var (not
+# derived from ALLOWED_ORIGIN_HOSTS) so it stays a single, unambiguous
+# exact-match value.
+ORIGIN_SIMULATOR_HOST = "mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+
+# Real Cloudflare Workers primitive (the Rate Limiting API), not a hand-
+# rolled counter -- free on every plan including Free tier, and the platform
+# tracks the window itself so this Worker doesn't need its own storage for
+# it. Declared via [[unsafe.bindings]] rather than a dedicated top-level
+# table because this wrangler version (4.123.0) hasn't promoted Rate
+# Limiting out of that mechanism yet -- confirmed by `wrangler deploy
+# --dry-run`, which resolves it correctly as a real `ratelimit` binding
+# despite the "unsafe/experimental" label wrangler prints for it. One
+# binding, two independently-bucketed keys (see subscribe.ts's
+# isRateLimited): "subscribe:<ip>" and "relay:<ip>" never share a bucket
+# even though they share this one binding.
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
 
 [[durable_objects.bindings]]
 name = "FEED_RELAY"
@@ -46,22 +77,79 @@ new_sqlite_classes = ["FeedRelay"]
 tag = "v2"
 new_sqlite_classes = ["ContextIndex"]
 
-# database_id is a placeholder (matches the real convention for local dev --
-# confirmed against Cloudflare's own vitest-pool-workers D1 test fixture,
-# not guessed). It works for `wrangler dev` and the test suite as-is; a real
-# deploy needs `wrangler d1 create mcp-relay-harness-delivery-log` run once first,
-# with its real returned UUID substituted here before `wrangler deploy`.
+# Real database, created 2026-08-22 via `wrangler d1 create
+# mcp-relay-harness-delivery-log` against the actual Cloudflare account --
+# not a placeholder anymore. `wrangler dev`'s default `--local` mode ignores
+# this id and always uses its own local SQLite regardless (confirmed by
+# testing: local dev worked identically before and after this changed), so
+# this update is safe for local dev and only actually matters for `--remote`
+# or a real `wrangler deploy`.
 #
-# `wrangler dev` does NOT auto-apply the SQL migrations in migrations/ --
-# confirmed by testing, not assumed: a fresh local D1 state genuinely 404s
-# with "no such table" on every delivery-log write until
-# `wrangler d1 migrations apply mcp-relay-harness-delivery-log --local` has been
-# run at least once. `npm run dev`/`npm run deploy` (see package.json) chain
-# this automatically -- it's a fast, idempotent no-op once already applied
-# -- but running `wrangler dev` directly, bypassing npm scripts, will hit
-# exactly this trap.
+# `wrangler dev`/`wrangler deploy` do NOT auto-apply the SQL migrations in
+# migrations/ -- confirmed by testing, not assumed: a fresh D1 state
+# genuinely 404s with "no such table" on every delivery-log write until
+# `wrangler d1 migrations apply mcp-relay-harness-delivery-log [--local]` has
+# been run at least once. `npm run dev`/`npm run deploy` (see package.json)
+# chain this automatically -- fast, idempotent no-op once already applied --
+# but running `wrangler dev`/`wrangler deploy` directly, bypassing npm
+# scripts, will hit exactly this trap.
 [[d1_databases]]
 binding = "DB"
 database_name = "mcp-relay-harness-delivery-log"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "e14b2ccd-c9a7-4cee-a6bb-9d42c6698e9d"
 migrations_dir = "migrations"
+
+# ============================================================================
+# `production` named environment -- deploy target for `wrangler deploy
+# --env production` (see package.json's `deploy` script). Exists ONLY to add
+# the ORIGIN_SIMULATOR service binding below without breaking local dev/tests
+# (see that binding's own comment for why it can't live at the top level).
+#
+# Every section below duplicates its top-level counterpart deliberately, not
+# by oversight: confirmed by testing (`wrangler deploy --dry-run --env
+# production`), named environments in this wrangler version do NOT inherit
+# `vars`, `durable_objects`, `d1_databases`, or `unsafe` from the top level --
+# wrangler's own config warning says so explicitly, and lists exactly these
+# four as needing to be repeated per environment. Keeping both copies in this
+# one file, immediately below their originals, makes drift between them
+# easy to spot in review rather than easy to miss across two separate files.
+# If you change a top-level binding, change its env.production twin too.
+# ============================================================================
+
+[env.production.vars]
+ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794,mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+ORIGIN_SIMULATOR_HOST = "mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+
+[[env.production.unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
+
+[[env.production.durable_objects.bindings]]
+name = "FEED_RELAY"
+class_name = "FeedRelay"
+
+[[env.production.durable_objects.bindings]]
+name = "CONTEXT_INDEX"
+class_name = "ContextIndex"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mcp-relay-harness-delivery-log"
+database_id = "e14b2ccd-c9a7-4cee-a6bb-9d42c6698e9d"
+migrations_dir = "migrations"
+
+# Cloudflare's own recommended pattern for Worker-to-Worker calls -- found
+# necessary by testing, not assumed: a plain fetch() from this Worker to
+# origin-simulator's public workers.dev URL was rejected with Cloudflare
+# error 1042 ("Worker fetching another Worker on the same workers.dev zone"),
+# confirmed by inspecting the real response body live, not guessed. A
+# service binding routes directly, Cloudflare-internal, free, faster, and
+# entirely unaffected by 1042. Used ONLY for this one known dev/eval origin
+# (see fetchOrigin.ts) -- every other allowlisted origin (a real external
+# MCP server, never itself another Worker on workers.dev in practice) still
+# goes through the unchanged, general-purpose fetch() path.
+[[env.production.services]]
+binding = "ORIGIN_SIMULATOR"
+service = "mcp-relay-harness-origin-simulator"

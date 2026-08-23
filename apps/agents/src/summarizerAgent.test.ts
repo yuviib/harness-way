@@ -32,7 +32,11 @@ test("buildModelChain puts the configured model first, then every fallback", () 
   assert.equal(chain[0], "gemini-flash-latest");
   assert.ok(chain.includes("gemini-flash-lite-latest"));
   assert.ok(chain.includes("gemini-3.1-flash-lite"));
-  assert.ok(chain.includes("gemma-4-31b-it"));
+  // gemma-4-31b-it was removed from the fallback chain: verified live, it
+  // doesn't reliably honor "no preamble" and returns its full reasoning
+  // trace instead of a one-line summary. Every model left in the chain is
+  // Gemini-branded and was re-checked for this behavior.
+  assert.ok(!chain.includes("gemma-4-31b-it"));
 });
 
 test("buildModelChain never tries the same model twice if the configured model is itself a fallback", () => {
@@ -112,6 +116,34 @@ test("generateSummary never calls Groq when no groqApiKey is passed (opt-in, not
   });
   await assert.rejects(() => generateSummary(evt, "gemini-key", ["model-a"], undefined));
   assert.equal(groqWasCalled, false);
+});
+
+test("callGeminiChain extracts just the final line when a model leaks its reasoning trace instead of one clean sentence", async (t) => {
+  // A real response shape observed from gemma-4-31b-it in production, before
+  // it was dropped from the fallback chain -- kept as a regression test for
+  // the defensive extraction in callGemini/callGroq, since a well-behaved
+  // model could still ramble occasionally even without that specific model
+  // in the chain.
+  const leaked =
+    '* Draft 1: A resource was updated on August 20, 2026.\n' +
+    "* Draft 2: An MCP resource has changed.\n" +
+    "Let's go with:\n" +
+    "A resource was updated on August 20, 2026.";
+  t.mock.method(globalThis, "fetch", async () => geminiOk(leaked));
+  const result = await callGeminiChain("k", ["model-a"], "prompt");
+  assert.equal(result.text, "A resource was updated on August 20, 2026.");
+});
+
+test("callGeminiChain strips a 'Final choice:' / 'Final:' prefix left on the last line", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => geminiOk("Reasoning...\nFinal choice: A resource changed."));
+  const result = await callGeminiChain("k", ["model-a"], "prompt");
+  assert.equal(result.text, "A resource changed.");
+});
+
+test("callGeminiChain leaves an already-clean one-line summary unchanged", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => geminiOk("A resource was updated."));
+  const result = await callGeminiChain("k", ["model-a"], "prompt");
+  assert.equal(result.text, "A resource was updated.");
 });
 
 test("generateSummary succeeds directly from Gemini when it works, never touching Groq", async (t) => {

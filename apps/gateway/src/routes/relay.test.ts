@@ -31,12 +31,13 @@ function mockToolOrigin() {
   return { fetchMock, getCallCount: () => callCount };
 }
 
-function relayRequest(body: unknown, auth = true): Request {
+function relayRequest(body: unknown, auth = true, ip?: string): Request {
   return new Request("https://x/relay", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       ...(auth ? { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}` } : {}),
+      ...(ip ? { "CF-Connecting-IP": ip } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -239,5 +240,24 @@ describe("handleRelay", () => {
       .bind("scope-8")
       .all<{ outcome: string }>();
     expect(results.map((r) => r.outcome)).toEqual(["miss", "hit"]);
+  });
+
+  it("returns 429 once one client's relay rate limit is exhausted, without calling the origin", async () => {
+    // A dedicated CF-Connecting-IP keeps this test's bucket independent of
+    // every other test in this file, which all share the fallback
+    // ("relay:<SUBSCRIBE_TOKEN>") bucket -- otherwise this test would both
+    // pollute and be polluted by unrelated tests' call counts.
+    const ip = `203.0.113.99-${crypto.randomUUID()}`;
+    let last: Response | undefined;
+    for (let i = 0; i < 31; i++) {
+      last = await handleRelay(
+        relayRequest({ originUrl: ORIGIN_URL, scope: "scope-ratelimit", tool: "resource_lookup", arguments: { resourceId: String(i) } }, true, ip),
+        env,
+      );
+    }
+    expect(last?.status).toBe(429);
+    // The 31st call's rate-limit check runs before the cache lookup / real
+    // origin call, so it must not have reached the origin either.
+    expect(origin.getCallCount()).toBe(30);
   });
 });

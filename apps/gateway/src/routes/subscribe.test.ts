@@ -1,6 +1,15 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { buildFeedKey, handleSubscribe, isAllowedOrigin, isAuthorized } from "./subscribe";
+import { buildFeedKey, handleSubscribe, isAllowedOrigin, isAuthorized, isRateLimited } from "./subscribe";
+
+// wrangler.toml's RATE_LIMITER binding is configured `simple = { limit: 30,
+// period: 60 }`, shared across every test in this file -- each test below
+// uses its own randomized CF-Connecting-IP so tests can't pollute each
+// other's bucket, the same isolation concern buildFeedKey's own tests take
+// seriously for a different reason.
+function uniqueIp(): string {
+  return `203.0.113.${Math.floor(Math.random() * 255)}-${crypto.randomUUID()}`;
+}
 
 // Real bindings from wrangler.toml, running inside the actual workerd
 // runtime -- not mocked. env.SUBSCRIBE_TOKEN / env.ALLOWED_ORIGIN_HOSTS are
@@ -38,18 +47,29 @@ describe("isAuthorized (timing-safe token check)", () => {
     expect(await isAuthorized(req, env)).toBe(false);
   });
 
-  it("matches an empty provided token only against an empty expected token", async () => {
-    // Documents the actual behavior explicitly rather than leaving it an
-    // untested assumption: both sides hash to the same fixed digest when
-    // both are empty, so this is expected to match -- it's the "provided
-    // empty against a REAL non-empty secret" case (covered by the missing-
-    // header test above, which already asserts false) that must never pass.
+  it("rejects an empty provided token against a MISSING expected token -- fails closed, not open", async () => {
+    // This used to be the opposite test, asserting `true`: an empty
+    // provided token and an empty/unset expected token hash to the same
+    // digest, so the comparison alone would match. Found by a fresh
+    // security review to be a real, complete auth bypass under a real
+    // misconfiguration (SUBSCRIBE_TOKEN never set on the deployed Worker --
+    // this project's own deploy hit exactly that once, for real, before
+    // being caught and fixed with `--env production`) -- a caller sending
+    // ZERO credentials would have been silently authorized. isAuthorized
+    // now checks for a missing token explicitly and fails closed before
+    // ever reaching the digest comparison; this test asserts that guard.
     const req = new Request("https://x/", { headers: { Authorization: "Bearer " } });
     // wrangler infers SUBSCRIBE_TOKEN as the literal type of its [vars]
     // value, not `string` -- the cast is deliberately widening for this one
     // test, not evidence the real binding type should be loosened.
     const fakeEnv = { ...env, SUBSCRIBE_TOKEN: "" } as unknown as Env;
-    expect(await isAuthorized(req, fakeEnv)).toBe(true);
+    expect(await isAuthorized(req, fakeEnv)).toBe(false);
+  });
+
+  it("rejects every request, even with the exact right-shaped token, when SUBSCRIBE_TOKEN is unset", async () => {
+    const req = new Request("https://x/", { headers: { Authorization: "Bearer anything-at-all" } });
+    const fakeEnv = { ...env, SUBSCRIBE_TOKEN: undefined } as unknown as Env;
+    expect(await isAuthorized(req, fakeEnv)).toBe(false);
   });
 
   describe("?token= query param fallback (for browser WebSocket clients, which can't set headers)", () => {
@@ -112,6 +132,45 @@ describe("isAllowedOrigin (SSRF guard)", () => {
   });
 });
 
+describe("isRateLimited (real Workers Rate Limiting API, not hand-rolled)", () => {
+  it("allows a fresh key through", async () => {
+    const req = new Request("https://x/", { headers: { "CF-Connecting-IP": uniqueIp() } });
+    expect(await isRateLimited(req, env, "subscribe")).toBe(false);
+  });
+
+  it("trips after exceeding the configured limit (30 per 60s) for one key", async () => {
+    const ip = uniqueIp();
+    const req = new Request("https://x/", { headers: { "CF-Connecting-IP": ip } });
+    const results: boolean[] = [];
+    for (let i = 0; i < 31; i++) {
+      results.push(await isRateLimited(req, env, "subscribe"));
+    }
+    expect(results.slice(0, 30)).toEqual(Array(30).fill(false));
+    expect(results[30]).toBe(true);
+  });
+
+  it("keeps /subscribe and /relay in independent buckets on the same key", async () => {
+    const ip = uniqueIp();
+    const req = new Request("https://x/", { headers: { "CF-Connecting-IP": ip } });
+    for (let i = 0; i < 30; i++) {
+      await isRateLimited(req, env, "subscribe");
+    }
+    // subscribe's own bucket for this IP is now exhausted -- relay's bucket
+    // for the SAME IP must be entirely unaffected, since they're keyed
+    // "subscribe:<ip>" vs "relay:<ip>", not "<ip>" alone.
+    expect(await isRateLimited(req, env, "subscribe")).toBe(true);
+    expect(await isRateLimited(req, env, "relay")).toBe(false);
+  });
+
+  it("falls back to the shared token as the key when CF-Connecting-IP is absent (local dev)", async () => {
+    // Not a bypass -- this is the same "one shared secret is the whole
+    // trust boundary" model already true of SUBSCRIBE_TOKEN itself, applied
+    // consistently. Just asserting it doesn't throw or silently no-op.
+    const req = new Request("https://x/");
+    expect(typeof (await isRateLimited(req, env, "subscribe"))).toBe("boolean");
+  });
+});
+
 describe("buildFeedKey (cross-subscription data-leak guard)", () => {
   it("produces different keys for pairs that would collide under naive concatenation", () => {
     // "${originUrl}::${category}" would make these two DIFFERENT pairs
@@ -154,5 +213,22 @@ describe("handleSubscribe integration", () => {
     });
     const res = await handleSubscribe(req, env);
     expect(res.status).toBe(403);
+  });
+
+  it("returns 429 once one client's subscribe rate limit is exhausted", async () => {
+    const ip = uniqueIp();
+    const makeReq = () =>
+      new Request("https://gateway/subscribe?originUrl=http://127.0.0.1:8794/mcp", {
+        headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}`, Upgrade: "websocket", "CF-Connecting-IP": ip },
+      });
+    let last: Response | undefined;
+    // 30 real attempts will fail for an unrelated reason (no real WebSocket
+    // upgrade machinery in this unit test) before ever reaching FeedRelay --
+    // that's fine, isRateLimited runs before any of that, so its own status
+    // is what's under test here, not the eventual 101.
+    for (let i = 0; i < 31; i++) {
+      last = await handleSubscribe(makeReq(), env);
+    }
+    expect(last?.status).toBe(429);
   });
 });
