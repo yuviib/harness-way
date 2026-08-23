@@ -37,3 +37,6 @@ __pycache__/
 # Local design-tool bookkeeping, not part of the project
 .hallmark/
 design.md
+
+# Personal interview/application prep, not part of the project itself
+docs/RESUME_PREP.md
