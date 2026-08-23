@@ -21,7 +21,7 @@ import { logCacheAccess } from "../lib/cacheLog";
 import { buildRequestHash } from "../lib/cacheKey";
 import { fetchOrigin } from "../lib/fetchOrigin";
 import { blake3Hex } from "../lib/wasmEngine";
-import { isAllowedOrigin, isAuthorized, isRateLimited } from "./subscribe";
+import { checkScope, isAllowedOrigin, isAuthorized, isRateLimited } from "./subscribe";
 
 interface RelayRequestBody {
   originUrl?: string;
@@ -48,7 +48,8 @@ async function logCacheAccessBestEffort(env: Env, entry: Parameters<typeof logCa
 }
 
 export async function handleRelay(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  const auth = await isAuthorized(request, env);
+  if (!auth.authorized) {
     return new Response("Unauthorized", { status: 401 });
   }
   if (await isRateLimited(request, env, "relay")) {
@@ -77,10 +78,17 @@ export async function handleRelay(request: Request, env: Env): Promise<Response>
     return new Response("arguments, if present, must be a JSON object", { status: 400 });
   }
   // Same SSRF boundary as /subscribe -- originUrl is attacker-controlled
-  // input from any caller holding the shared token, and this route is
+  // input from any caller holding a valid credential, and this route is
   // another path that ends in this Worker's own fetch() to it.
   if (!isAllowedOrigin(originUrl, env.ALLOWED_ORIGIN_HOSTS)) {
     return new Response("originUrl is not on the allowed origin list", { status: 403 });
+  }
+  // checkScope only knows originUrl here, not until after the body is
+  // parsed above -- unlike /subscribe, where originUrl is a query param
+  // available before auth even resolves. category is irrelevant to
+  // /relay (see agentAuth.ts's own comment on why), passed null.
+  if (!checkScope(auth, "relay", originUrl, null)) {
+    return new Response("This credential is not scoped to that origin, or cannot use /relay", { status: 403 });
   }
 
   const requestHash = buildRequestHash({ originUrl, tool, arguments: args });

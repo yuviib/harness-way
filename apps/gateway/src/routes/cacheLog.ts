@@ -22,7 +22,7 @@ export function handleCacheLogPreflight(): Response {
 }
 
 export async function handleCacheLog(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  if (!(await isAuthorized(request, env)).authorized) {
     return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
   }
 
@@ -52,7 +52,7 @@ export async function handleCacheLog(request: Request, env: Env): Promise<Respon
 // to make, which is the literal, defensible meaning of "saved" here --
 // not an estimate or a multiplier applied after the fact.
 export async function handleCacheLogStats(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  if (!(await isAuthorized(request, env)).authorized) {
     return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
   }
 

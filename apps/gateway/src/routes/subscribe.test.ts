@@ -15,27 +15,29 @@ function uniqueIp(): string {
 // runtime -- not mocked. env.SUBSCRIBE_TOKEN / env.ALLOWED_ORIGIN_HOSTS are
 // whatever wrangler.toml's [vars] currently say.
 
-describe("isAuthorized (timing-safe token check)", () => {
+describe("isAuthorized (the legacy shared-token path -- scoped credentials have their own suite in lib/agentAuth.test.ts)", () => {
   it("accepts the correct bearer token", async () => {
     const req = new Request("https://x/", {
       headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}` },
     });
-    expect(await isAuthorized(req, env)).toBe(true);
+    const result = await isAuthorized(req, env);
+    expect(result.authorized).toBe(true);
+    expect(result.agentName).toBe("shared-token");
   });
 
   it("rejects a wrong token", async () => {
     const req = new Request("https://x/", { headers: { Authorization: "Bearer wrong-token" } });
-    expect(await isAuthorized(req, env)).toBe(false);
+    expect((await isAuthorized(req, env)).authorized).toBe(false);
   });
 
   it("rejects a missing Authorization header", async () => {
     const req = new Request("https://x/");
-    expect(await isAuthorized(req, env)).toBe(false);
+    expect((await isAuthorized(req, env)).authorized).toBe(false);
   });
 
   it("rejects a header missing the Bearer prefix", async () => {
     const req = new Request("https://x/", { headers: { Authorization: env.SUBSCRIBE_TOKEN } });
-    expect(await isAuthorized(req, env)).toBe(false);
+    expect((await isAuthorized(req, env)).authorized).toBe(false);
   });
 
   it("rejects a token that only differs in length, not just content", async () => {
@@ -44,7 +46,7 @@ describe("isAuthorized (timing-safe token check)", () => {
     const req = new Request("https://x/", {
       headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}extra` },
     });
-    expect(await isAuthorized(req, env)).toBe(false);
+    expect((await isAuthorized(req, env)).authorized).toBe(false);
   });
 
   it("rejects an empty provided token against a MISSING expected token -- fails closed, not open", async () => {
@@ -63,31 +65,31 @@ describe("isAuthorized (timing-safe token check)", () => {
     // value, not `string` -- the cast is deliberately widening for this one
     // test, not evidence the real binding type should be loosened.
     const fakeEnv = { ...env, SUBSCRIBE_TOKEN: "" } as unknown as Env;
-    expect(await isAuthorized(req, fakeEnv)).toBe(false);
+    expect((await isAuthorized(req, fakeEnv)).authorized).toBe(false);
   });
 
   it("rejects every request, even with the exact right-shaped token, when SUBSCRIBE_TOKEN is unset", async () => {
     const req = new Request("https://x/", { headers: { Authorization: "Bearer anything-at-all" } });
     const fakeEnv = { ...env, SUBSCRIBE_TOKEN: undefined } as unknown as Env;
-    expect(await isAuthorized(req, fakeEnv)).toBe(false);
+    expect((await isAuthorized(req, fakeEnv)).authorized).toBe(false);
   });
 
   describe("?token= query param fallback (for browser WebSocket clients, which can't set headers)", () => {
     it("accepts the correct token via query param when no Authorization header is present", async () => {
       const req = new Request(`https://x/?token=${env.SUBSCRIBE_TOKEN}`);
-      expect(await isAuthorized(req, env)).toBe(true);
+      expect((await isAuthorized(req, env)).authorized).toBe(true);
     });
 
     it("rejects a wrong token via query param", async () => {
       const req = new Request("https://x/?token=wrong-token");
-      expect(await isAuthorized(req, env)).toBe(false);
+      expect((await isAuthorized(req, env)).authorized).toBe(false);
     });
 
     it("prefers a valid Authorization header over the query param when both are present", async () => {
       const req = new Request("https://x/?token=wrong-token", {
         headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}` },
       });
-      expect(await isAuthorized(req, env)).toBe(true);
+      expect((await isAuthorized(req, env)).authorized).toBe(true);
     });
   });
 });
@@ -215,20 +217,50 @@ describe("handleSubscribe integration", () => {
     expect(res.status).toBe(403);
   });
 
-  it("returns 429 once one client's subscribe rate limit is exhausted", async () => {
-    const ip = uniqueIp();
-    const makeReq = () =>
-      new Request("https://gateway/subscribe?originUrl=http://127.0.0.1:8794/mcp", {
-        headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}`, Upgrade: "websocket", "CF-Connecting-IP": ip },
-      });
-    let last: Response | undefined;
-    // 30 real attempts will fail for an unrelated reason (no real WebSocket
-    // upgrade machinery in this unit test) before ever reaching FeedRelay --
-    // that's fine, isRateLimited runs before any of that, so its own status
-    // is what's under test here, not the eventual 101.
-    for (let i = 0; i < 31; i++) {
-      last = await handleSubscribe(makeReq(), env);
-    }
-    expect(last?.status).toBe(429);
+  it("returns 403 for a real scoped credential whose scope doesn't cover the requested origin, even though the token itself is valid", async () => {
+    const token = `subscribe-scope-test-${crypto.randomUUID()}`;
+    const tokenHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)).then((d) => [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join(""));
+    await env.DB.prepare("INSERT INTO agent_credentials (agent_name, token_hash, scope_origin_host, can_subscribe, created_at) VALUES (?, ?, ?, 1, ?)").bind(
+      "scope-mismatch-agent",
+      tokenHash,
+      "only-this-host.test",
+      new Date().toISOString(),
+    ).run();
+
+    const req = new Request("https://gateway/subscribe?originUrl=http://127.0.0.1:8794/mcp", {
+      headers: { Authorization: `Bearer ${token}`, Upgrade: "websocket" },
+    });
+    const res = await handleSubscribe(req, env);
+    // Not 401 -- the credential is real and valid, this is specifically
+    // the checkScope() rejection, a different failure than "who are you".
+    expect(res.status).toBe(403);
   });
+
+  it(
+    "returns 429 once one client's subscribe rate limit is exhausted",
+    async () => {
+      const ip = uniqueIp();
+      const makeReq = () =>
+        new Request("https://gateway/subscribe?originUrl=http://127.0.0.1:8794/mcp", {
+          headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}`, Upgrade: "websocket", "CF-Connecting-IP": ip },
+        });
+      let last: Response | undefined;
+      // 30 real attempts will fail for an unrelated reason (no real WebSocket
+      // upgrade machinery in this unit test) before ever reaching FeedRelay --
+      // that's fine, isRateLimited runs before any of that, so its own status
+      // is what's under test here, not the eventual 101.
+      for (let i = 0; i < 31; i++) {
+        last = await handleSubscribe(makeReq(), env);
+      }
+      expect(last?.status).toBe(429);
+    },
+    // 31 real, sequential round-trips to the actual Rate Limiting binding
+    // (remote mode under vitest-pool-workers, same as under local wrangler
+    // dev) reliably exceed the default 5s timeout once the rest of the
+    // suite is running concurrently and contending for the same real
+    // network path -- confirmed flaky specifically under full-suite load,
+    // not in isolation, so this is a real timing constraint to raise, not
+    // a bug to chase.
+    15000,
+  );
 });

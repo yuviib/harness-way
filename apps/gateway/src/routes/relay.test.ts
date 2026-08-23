@@ -66,6 +66,25 @@ describe("handleRelay", () => {
     expect(origin.getCallCount()).toBe(0);
   });
 
+  it("rejects a real, valid credential that isn't scoped to allow /relay at all -- can_relay defaults to false", async () => {
+    const token = `relay-no-permission-${crypto.randomUUID()}`;
+    const tokenHash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)).then((d) => [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join(""));
+    // can_relay omitted entirely -- defaults to 0, same as a credential
+    // minted for a subscribe-only agent that was never meant to call /relay.
+    await env.DB.prepare("INSERT INTO agent_credentials (agent_name, token_hash, created_at) VALUES (?, ?, ?)").bind("subscribe-only-agent", tokenHash, new Date().toISOString()).run();
+
+    const req = new Request("https://x/relay", {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ originUrl: ORIGIN_URL, scope: "s", tool: "resource_lookup", arguments: {} }),
+    });
+    const res = await handleRelay(req, env);
+    // Not 401 -- this credential is real. 403 specifically, the same
+    // checkScope() rejection subscribe.ts's own scope-mismatch test hits.
+    expect(res.status).toBe(403);
+    expect(origin.getCallCount()).toBe(0);
+  });
+
   it("rejects a request missing originUrl/scope/tool", async () => {
     const res = await handleRelay(relayRequest({ scope: "s", tool: "t" }), env);
     expect(res.status).toBe(400);

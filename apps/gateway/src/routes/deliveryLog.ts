@@ -35,7 +35,7 @@ export function handleDeliveryLogPreflight(): Response {
 }
 
 export async function handleDeliveryLog(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  if (!(await isAuthorized(request, env)).authorized) {
     return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
   }
 
@@ -81,7 +81,7 @@ export async function handleDeliveryLog(request: Request, env: Env): Promise<Res
 // gap log rows"; it is NOT right for "how many gaps have there EVER been" --
 // those are two different questions needing two different queries.
 export async function handleDeliveryLogCounts(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  if (!(await isAuthorized(request, env)).authorized) {
     return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
   }
 

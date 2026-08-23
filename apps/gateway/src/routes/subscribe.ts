@@ -1,48 +1,17 @@
+import { type AuthResult, checkScope, extractToken, resolveCredential } from "../lib/agentAuth";
 import { buildFeedKey } from "../lib/feedKey";
 
 export { buildFeedKey };
+export { checkScope, extractToken, resolveCredential } from "../lib/agentAuth";
+export type { AuthResult } from "../lib/agentAuth";
 
-// Deliberately minimal validation baseline for v1 (see wrangler.toml for why):
-// proves the caller holds a shared secret, nothing more. Real per-agent
-// identity/authorization is explicitly out of scope and documented as such,
-// not silently absent. The comparison itself, though, is a real defense-in-
-// depth fix worth making regardless of the token model's other limits: a
-// raw `===` on the token short-circuits on the first differing byte, a
-// known (if narrow) timing side-channel. Hashing both sides to a fixed-
-// length digest before comparing removes both that and any length-based
-// signal on the raw secret; `crypto.subtle.timingSafeEqual` (a real, if
-// non-standard, Workers runtime extension) does the constant-time compare
-// itself, exactly the two-step recipe Cloudflare's own docs describe for
-// this, rather than a hand-rolled XOR loop reimplementing the same thing.
-export async function isAuthorized(request: Request, env: Env): Promise<boolean> {
-  // Fail closed on a missing token: `TextEncoder.encode(undefined)` hashes
-  // identically to `encode("")`, so without this guard, an unset
-  // SUBSCRIBE_TOKEN (e.g. `wrangler secret put` run against the wrong
-  // environment) would silently authorize any caller sending zero
-  // credentials rather than reject them. Found by security review, verified
-  // by testing.
-  if (!env.SUBSCRIBE_TOKEN) {
-    return false;
-  }
-  const auth = request.headers.get("Authorization");
-  // Query-param fallback exists for exactly one real reason: browsers'
-  // native WebSocket constructor cannot set an Authorization header on the
-  // handshake request at all (no API for it) -- the dashboard's
-  // LiveFanoutView, which connects directly from the browser, has no other
-  // way to authenticate a WS /subscribe call. This widens the SAME
-  // dev-only shared-secret model (see the module comment above) to a
-  // second transport, not a separate or weaker one -- it does not apply to
-  // anything beyond what a valid bearer token already grants.
-  const tokenParam = new URL(request.url).searchParams.get("token");
-  const provided = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : (tokenParam ?? "");
-  const encoder = new TextEncoder();
-  const [providedDigest, expectedDigest] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(provided)),
-    crypto.subtle.digest("SHA-256", encoder.encode(env.SUBSCRIBE_TOKEN)),
-  ]);
-  // Both are always 32 bytes (fixed SHA-256 output length), so timingSafeEqual
-  // never hits its equal-length requirement as a real constraint here.
-  return crypto.subtle.timingSafeEqual(providedDigest, expectedDigest);
+// Resolves whichever credential the request is carrying (a scoped, named
+// agent credential, or the original shared secret) -- see lib/agentAuth.ts
+// for the full reasoning. Scope restrictions (which origin, which
+// category, subscribe vs. relay) are checked separately by the caller via
+// checkScope(), once the actual requested target is known.
+export async function isAuthorized(request: Request, env: Env): Promise<AuthResult> {
+  return resolveCredential(env, extractToken(request));
 }
 
 // Real Workers Rate Limiting binding (see wrangler.toml), not a hand-rolled
@@ -95,7 +64,8 @@ export function isAllowedOrigin(originUrl: string, allowedHostsCsv: string): boo
 }
 
 export async function handleSubscribe(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  const auth = await isAuthorized(request, env);
+  if (!auth.authorized) {
     return new Response("Unauthorized", { status: 401 });
   }
   if (await isRateLimited(request, env, "subscribe")) {
@@ -110,6 +80,14 @@ export async function handleSubscribe(request: Request, env: Env): Promise<Respo
   }
   if (!isAllowedOrigin(originUrl, env.ALLOWED_ORIGIN_HOSTS)) {
     return new Response("originUrl is not on the allowed origin list", { status: 403 });
+  }
+  // Distinct from isAllowedOrigin above: that's the account-wide SSRF
+  // boundary (which hosts exist to talk to at all), this is a per-credential
+  // restriction (which of those hosts THIS caller is allowed to reach) --
+  // a legacy shared-token caller has no scope restriction and always
+  // passes this check, exactly today's behavior.
+  if (!checkScope(auth, "subscribe", originUrl, category)) {
+    return new Response("This credential is not scoped to that origin/category", { status: 403 });
   }
 
   const feedKey = buildFeedKey(originUrl, category);

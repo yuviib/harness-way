@@ -35,7 +35,7 @@ export function handleAgentLogPreflight(): Response {
 }
 
 export async function handleAgentLogPost(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  if (!(await isAuthorized(request, env)).authorized) {
     return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
   }
 
@@ -74,7 +74,7 @@ export async function handleAgentLogPost(request: Request, env: Env): Promise<Re
 // and fixed for delivery_log (see deliveryLog.ts's own comment on this),
 // applied here from the start rather than rediscovered the same way.
 export async function handleAgentLogCounts(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  if (!(await isAuthorized(request, env)).authorized) {
     return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
   }
 
@@ -100,7 +100,7 @@ export async function handleAgentLogCounts(request: Request, env: Env): Promise<
 }
 
 export async function handleAgentLogGet(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
+  if (!(await isAuthorized(request, env)).authorized) {
     return new Response("Unauthorized", { status: 401, headers: CORS_HEADERS });
   }
 
