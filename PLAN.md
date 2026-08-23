@@ -85,7 +85,7 @@ mcp-relay-harness/
     src/lib.rs, src/sse_framing.rs, src/ring_buffer.rs, src/hash.rs (Capability 2, BLAKE3)
   eval/
     scenarios/, harness/feed_simulator.py, harness/chaos_client.py, harness/metrics.py, harness/run_eval.py, results/
-  docs/ARCHITECTURE.md, docs/DEMO_SCRIPT.md
+  docs/ARCHITECTURE.md
 ```
 
 `FeedRelay.ts` and `ContextIndex.ts` are separate DO classes with separate responsibilities on purpose. `index.ts` only dispatches, no parsing, caching, or fan-out logic itself, so swapping any one piece never requires touching the others.

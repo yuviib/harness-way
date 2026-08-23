@@ -190,7 +190,7 @@ cd apps/agents && cp .env.example .env && npm install && npm run dev
 cd apps/agents && npm run demo:cache
 ```
 
-Then open the dashboard, point it at the running gateway and origin-simulator (defaults match the ports above), and connect a few subscribers to watch the fan-out live. See `docs/DEMO_SCRIPT.md` for a guided walkthrough, and `eval/README.md` for running the chaos harness.
+Then open the dashboard, point it at the running gateway and origin-simulator (defaults match the ports above), and connect a few subscribers to watch the fan-out live. See `eval/README.md` for running the chaos harness.
 
 The gateway and origin-simulator's dev ports are pinned via `[dev]` blocks in their own `wrangler.toml` (8787 and 8794) rather than left to wrangler's default-with-auto-increment behavior. Found necessary by testing, not assumed: with no pinned port, the two Workers can race for the same default port, and the loser silently lands one port over with no error, breaking every hardcoded reference to it across the dashboard and this README.
 
@@ -221,7 +221,7 @@ apps/agents/             four real WebSocket agent consumers, plus the cache-sha
 apps/dashboard/          React + Tailwind operator dashboard
 crates/mcp-relay-engine/  Rust -> WASM: SSE framing, replay ring buffer, BLAKE3 hashing
 eval/                    Python chaos-testing harness and recorded results
-docs/                    architecture notes and a guided demo script
+docs/                    architecture notes and the master technical spec
 PLAN.md                  the original scoping document this was built against
 ```
 
