@@ -1,4 +1,5 @@
 import { handleAgentLogCounts, handleAgentLogGet, handleAgentLogPost, handleAgentLogPreflight } from "./routes/agentLog";
+import { handleAuditLogGet, handleAuditLogPost, handleAuditLogPreflight, handleAuditLogVerify } from "./routes/auditLog";
 import { handleCacheLog, handleCacheLogPreflight, handleCacheLogStats } from "./routes/cacheLog";
 import { handleDeliveryLog, handleDeliveryLogCounts, handleDeliveryLogPreflight } from "./routes/deliveryLog";
 import { handleRelay } from "./routes/relay";
@@ -6,6 +7,7 @@ import { handleSubscribe } from "./routes/subscribe";
 
 export { FeedRelay } from "./do/FeedRelay";
 export { ContextIndex } from "./do/ContextIndex";
+export { AuditLog } from "./do/AuditLog";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -42,6 +44,18 @@ export default {
         return handleAgentLogPost(request, env);
       }
       return handleAgentLogGet(request, env);
+    }
+    if (url.pathname === "/api/audit-log" || url.pathname === "/api/audit-log/verify") {
+      if (request.method === "OPTIONS") {
+        return handleAuditLogPreflight();
+      }
+      if (url.pathname.endsWith("/verify")) {
+        return handleAuditLogVerify(request, env);
+      }
+      if (request.method === "POST") {
+        return handleAuditLogPost(request, env);
+      }
+      return handleAuditLogGet(request, env);
     }
     return new Response(
       "MCP Relay Harness gateway.\n" +

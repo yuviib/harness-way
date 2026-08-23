@@ -80,6 +80,10 @@ class_name = "FeedRelay"
 name = "CONTEXT_INDEX"
 class_name = "ContextIndex"
 
+[[durable_objects.bindings]]
+name = "AUDIT_LOG"
+class_name = "AuditLog"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["FeedRelay"]
@@ -93,6 +97,10 @@ new_sqlite_classes = ["FeedRelay"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["ContextIndex"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["AuditLog"]
 
 # Real database, created 2026-08-22 via `wrangler d1 create
 # mcp-relay-harness-delivery-log` against the actual Cloudflare account --
@@ -151,6 +159,10 @@ class_name = "FeedRelay"
 [[env.production.durable_objects.bindings]]
 name = "CONTEXT_INDEX"
 class_name = "ContextIndex"
+
+[[env.production.durable_objects.bindings]]
+name = "AUDIT_LOG"
+class_name = "AuditLog"
 
 [[env.production.d1_databases]]
 binding = "DB"
