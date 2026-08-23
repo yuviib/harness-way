@@ -3,6 +3,14 @@ main = "src/index.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Structured logs and traces, not left to whatever `wrangler tail` happens to
+# be running at the moment. head_sampling_rate = 1 (capture everything) is
+# right for this traffic volume; a genuinely high-traffic Worker would lower
+# it to control cost, this one won't get close to that.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 # Pinned rather than left to wrangler's own default-port-with-auto-increment
 # behavior -- found the hard way: with no [dev] block, this Worker and
 # origin-simulator's both tried to claim wrangler's default port, one lost

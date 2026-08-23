@@ -2,6 +2,10 @@ name = "mcp-relay-harness-origin-simulator"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 # Pinned for the same reason as the gateway's own wrangler.toml: with no
 # [dev] block, this and the gateway Worker can race for wrangler's default
 # port, and the loser silently lands somewhere the rest of the stack
