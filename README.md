@@ -39,6 +39,12 @@ MCP Relay Harness sits between the origin and its subscribers. It holds exactly 
 
 See `docs/ARCHITECTURE.md`'s "Capability 2" section for the full design, including why the cache index ended up on Durable Object SQLite rather than the Cache API/KV the original plan sketch named.
 
+**Per-agent scoped credentials and a tamper-evident audit log**, added once a real multi-agent consumer ([Fraud Ops](https://github.com/yuviib/fraud-ops)) needed real per-identity accountability, not just a shared secret:
+
+- `agent_credentials` in D1: SHA-256-hashed tokens, each scoped to a specific origin host, category, and capability (`subscribe`, `relay`), individually revocable. Layered on top of the legacy shared `SUBSCRIBE_TOKEN`, not replacing it, so existing callers keep working while new ones get real per-identity scoping. Resolution fails open to the legacy token on a D1 error, fails closed on a missing token entirely.
+- `AuditLog`, a third Durable Object (SQLite storage class): every entry embeds `BLAKE3(prevHash + canonicalEntry)`, so altering or deleting any past entry breaks every hash after it. `verify()` walks the full chain from genesis and recomputes every hash, rather than trusting the storage layer. Proven with tests that directly mutate the underlying DO storage (edit a field, delete a row) and confirm `verify()` catches both. A single-instance DO specifically because the read-last-hash-then-insert has to be atomic with no `await` in between, a guarantee D1 from concurrent Workers can't give but a DO's single-threaded execution does.
+- `crypto.subtle.timingSafeEqual` (a real, non-standard Workers extension) now backs the legacy-token comparison, replacing a hand-rolled constant-time XOR loop.
+
 **Four real agent consumers**, added on top of the relay once it was working, to answer a different question than the test suite does: not "is the relay correct" but "does that correctness actually matter to something depending on it." Each agent in `apps/agents` is a genuine WebSocket subscriber through the same `/subscribe` endpoint any client uses, and each one's own logic depends on a specific guarantee the relay makes:
 
 - **resume-agent** reconnects on a fixed interval and verifies the replay it gets back is gapless and picks up exactly where it left off.
@@ -48,7 +54,7 @@ See `docs/ARCHITECTURE.md`'s "Capability 2" section for the full design, includi
 
 MCP is the protocol AI agents use to talk to tools and resources, so this isn't a stretch. It's the actual shape of who consumes a feed like this. Every agent's decision is logged and shown live in the dashboard's Agents view.
 
-**A fifth consumer exists outside this repo entirely.** [Fraud Ops](https://github.com/yuviib/fraud-ops) is a separate project, its own repo and its own deployment, built by pointing a two-panel operator console at this relay's real production gateway rather than a local copy. One panel subscribes to a synthetic fraud-case feed directly; the other subscribes through this relay. Trigger a real outage and the difference is immediate: the direct subscriber goes quiet with no indication anything happened, the relay-backed one gets an honest gap marker and, on reconnect, a real count of what it missed. It exists to answer a question this repo's own test suite and agents can't: does the guarantee actually matter to something built independently on top of it. It does.
+**A fifth consumer exists outside this repo entirely, and it's the one that put the credentials and audit log above to real use.** [Fraud Ops](https://github.com/yuviib/fraud-ops) is a separate project, its own repo and its own deployment, built by pointing a real LangGraph.js triage agent at this relay's real production gateway rather than a local copy. Two console panels subscribe to a synthetic transaction-signal feed side by side, one direct to the origin, one through this relay; trigger a real outage and the difference is immediate, the direct subscriber goes quiet with no indication anything happened, the relay-backed one gets an honest gap marker and a real count of what it missed on reconnect. Independently, a real LangGraph agent (state, nodes, conditional edges, a checkpointer, a retry policy, a two-tier model fallback, and a shared-quota throttle) subscribes through the same relay, authenticates with its own scoped credential rather than the shared token, and writes every triage decision it makes to the hash-chained audit log above, attributed to its own identity, tamper-evident and independently verifiable. It exists to answer two questions this repo's own test suite and agents can't: does the resumability guarantee actually matter to something built independently on top of it, and can a real agent's decisions on that data be made genuinely accountable, not just plausible. Both, demonstrably, yes.
 
 ## Architecture
 
@@ -69,15 +75,16 @@ MCP is the protocol AI agents use to talk to tools and resources, so this isn't 
                                                                             ^                    ^
                                                                      caller A (miss)      caller B (hit, same scope)
 
-  Worker (apps/gateway)                   D1 (delivery_log, agent_log, cache_log)
-    /subscribe  -> routes to the FeedRelay DO keyed on (originUrl, category)
+  Worker (apps/gateway)                   D1 (delivery_log, agent_log, cache_log, agent_credentials)
+    /subscribe  -> routes to the FeedRelay DO keyed on (originUrl, category), scope-checked against agent_credentials
     /relay      -> routes to the ContextIndex DO keyed on scope, fails open to a real origin call on any miss
     /api/delivery-log, /api/delivery-log/counts  -> relay history, read by the dashboard
     /api/agent-log, /api/agent-log/counts        -> agent activity, read by the dashboard
     /api/cache-log, /api/cache-log/stats         -> cache hit/miss history, read by the dashboard
+    /api/audit-log, /api/audit-log/verify        -> append/read/verify the hash-chained AuditLog DO, read by any real agent consumer (e.g. Fraud Ops)
 ```
 
-- **`apps/gateway`** (Cloudflare Worker + two Durable Object classes): the relay itself. `FeedRelay` is one DO instance per feed; it owns the single upstream connection, the replay buffer, and fan-out to every downstream hibernatable WebSocket. `ContextIndex` is one DO instance per cache `scope`; it owns that scope's content-addressed cache index.
+- **`apps/gateway`** (Cloudflare Worker + three Durable Object classes): the relay itself. `FeedRelay` is one DO instance per feed; it owns the single upstream connection, the replay buffer, and fan-out to every downstream hibernatable WebSocket. `ContextIndex` is one DO instance per cache `scope`; it owns that scope's content-addressed cache index. `AuditLog` is a single instance owning the hash-chained decision log, real RPC methods (`append`, `list`, `verify`), not a `fetch()` handler.
 - **`crates/mcp-relay-engine`** (Rust, compiled to WASM): incremental, chunk-boundary-safe SSE parsing, plus BLAKE3 content hashing for the cache. The upstream response body is a stream that can split an event across two chunks at any byte offset; this is a real parser for that, not a naive split-on-newline. Both are wired directly into the gateway's real request paths, not standalone demos.
 - **`apps/origin-simulator`** (Cloudflare Worker): a synthetic MCP origin implementing the `subscriptions/listen` shape and a `tools/call` shape (one deterministic `resource_lookup` tool, with a real artificial latency and a call counter that only advances on a genuine call), for local dev and the chaos harness. Clearly not a real MCP server, and not meant to be.
 - **`apps/agents`** (Node/TypeScript): four real WebSocket consumers of the relay, each exercising a specific correctness property live, plus `cacheSharingAgent.ts` (`npm run demo:cache`), a real two-caller demonstration of the cache capability. See "Four real agent consumers" above.
@@ -112,8 +119,9 @@ Every claim above has a check behind it, not just a design doc.
 |---|---|---|
 | Rust SSE parser, replay buffer, and BLAKE3 hashing | `cargo test` | 30/30 passing, including the published BLAKE3 empty-input test vector, asserted as a known value |
 | Rust engine | `cargo clippy --all-targets` | clean |
-| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 114/114 passing |
-| Gateway | `wrangler deploy --env production` | live on Cloudflare, 83.6 KiB / 31 KiB gzip, comfortably inside the Workers free-tier 3 MiB gzip cap |
+| Gateway (real `workerd` runtime, real DO/D1 bindings via `@cloudflare/vitest-pool-workers`) | `vitest run` | 144/144 passing, including hash-chain tamper detection (direct DO storage mutation, `verify()` catches it) and per-agent credential scope enforcement |
+| Gateway | `wrangler deploy --env production` | live on Cloudflare, 91.6 KiB / 32.8 KiB gzip, comfortably inside the Workers free-tier 3 MiB gzip cap |
+| Fraud Ops triage agent (`agents/`, real LangGraph.js graph + fallback chain, `node --test`, no network calls) | `npm test` | 16/16 passing: routing thresholds, checkpointer accumulation and per-case isolation, the retry policy actually re-invoking on a thrown failure, and the full primary → fallback1 → fallback2 cascade with `fetch` stubbed out |
 | Dashboard | `tsc -b` + `vite build` + `oxlint` | clean, deployed to Cloudflare Pages |
 | Agents | `tsc --noEmit` | clean |
 | Agents (against a real live gateway and origin simulator) | resume-agent, gap-aware-agent, ordering-agent | each logged the expected real activity: reconnects verified gapless, a real killed-process outage correctly resynced, zero ordering violations across live events |
@@ -133,6 +141,19 @@ The chaos harness doesn't mock failures. `upstream-outage` kills and restarts th
 
 "Violations" here means a silent gap (an event skipped with no gap marker), a duplicate sequence number, an out-of-order delivery, or a replay that isn't self-consistent with what was actually sent. Zero across all three runs.
 
+## Performance, measured against the real production deployment
+
+Not a synthetic benchmark environment, the actual `mcp-relay-harness-gateway-production` Worker, D1 database, and Durable Objects, hit with real concurrent HTTP load from a separate machine:
+
+| Endpoint | Concurrency | Result |
+|---|---|---|
+| `GET /api/audit-log` (D1 read) | 20 | 100/100 succeeded. Latency: p50 106ms, p90 227ms, p99 316ms |
+| `GET /api/audit-log/verify` (full hash-chain walk + BLAKE3 rehash of every entry) | 20 | 100/100 succeeded. Latency: p50 237ms, p90 258ms, p99 268ms — a higher, steadier floor than the plain read (expected, it's real CPU-bound work over every entry, not a single indexed row), but tighter tail variance |
+| `GET /api/audit-log`, concurrency sweep | 5 → 20 → 50 | p50 127ms → 92ms → 186ms, p99 286ms → 198ms → 370ms. Roughly flat through 20 concurrent readers, visibly (not catastrophically) degrading at 50 — an honest scaling curve, not a claim that this holds at arbitrary concurrency |
+| `POST /relay` (Rate Limiting binding, configured 30 req/60s per key) | 40 sequential requests, one IP | First 31 requests reached application logic (rejected there for an unrelated reason, an intentionally-invalid demo payload); request 32 onward correctly returned `429` from the real Workers Rate Limiting API, not a local simulation of one |
+
+The rate-limiting result is the more important line: it's proof the binding declared in `wrangler.toml` actually enforces its configured limit against the live deployment, not just that the config exists.
+
 ## A real bug, found and fixed
 
 Adding Cloudflare's Rate Limiting binding introduced a genuine authentication bypass, caught by a focused security review of that specific change rather than assumed safe. `isAuthorized` compared a SHA-256 digest of the caller-provided token against a digest of `SUBSCRIBE_TOKEN`, but never checked whether `SUBSCRIBE_TOKEN` itself was actually set. `TextEncoder.encode(undefined)` produces the identical empty byte array as `TextEncoder.encode("")`, confirmed by testing, so a deployment where the secret was never configured (a real, plausible mistake if `wrangler secret put` is ever run against the wrong named environment) would silently authorize any caller sending zero credentials at all.
@@ -141,7 +162,7 @@ The fix is a single explicit guard: reject outright when `SUBSCRIBE_TOKEN` is mi
 
 ## Known gaps, stated rather than hidden
 
-- **Auth is a shared bearer token, not per-agent identity.** Enough to prove the caller holds a shared secret; not real authorization. Documented as a deliberate v1 scope cut, not an oversight. The cache's `scope` inherits this same boundary: it's a caller-supplied string, not derived from real authenticated identity, since there is no real per-caller identity yet to derive it from. What is real regardless: two different scope strings can never observe each other's cached entries, a structural guarantee independent of how weak the identity model around `scope` itself currently is.
+- **Real per-agent identity now exists (`agent_credentials`), but it's opt-in, not the only path.** The legacy shared `SUBSCRIBE_TOKEN` still authenticates, unchanged, for backward compatibility — a caller minted only a scoped credential gets real per-identity accountability (audit-log attribution, revocability, origin/category/capability scoping); a caller still using the shared token doesn't, and nothing forces migration. The cache's `scope` still inherits the older boundary described below: it's a caller-supplied string, not (yet) derived from the new real credential identity. What is real regardless: two different scope strings can never observe each other's cached entries, a structural guarantee independent of how the identity model around `scope` itself gets stronger over time.
 - **SSRF-relevant input is checked; the token model is not the strongest possible.** `originUrl` is validated against an explicit allowlist before the relay ever calls `fetch()` on it (see `isAllowedOrigin` in `apps/gateway/src/routes/subscribe.ts`, reused unchanged by `/relay`), and the auth token comparison is constant-time. Both are real, not theatrical, but the underlying trust model of one shared secret is the known gap above.
 - **The measured upstream-residency cost (correctness property 4b) hasn't been collected yet.** The design and the reasoning behind it are documented above; the actual GB-seconds number from a real deployment under load is the one item from the original plan still open.
 
@@ -194,7 +215,7 @@ cd apps/dashboard && npm run build && npx wrangler deploy
 ## Repo layout
 
 ```
-apps/gateway/            Worker + FeedRelay/ContextIndex Durable Objects, the relay itself
+apps/gateway/            Worker + FeedRelay/ContextIndex/AuditLog Durable Objects, the relay itself
 apps/origin-simulator/   synthetic MCP origin for dev and chaos testing
 apps/agents/             four real WebSocket agent consumers, plus the cache-sharing demo
 apps/dashboard/          React + Tailwind operator dashboard

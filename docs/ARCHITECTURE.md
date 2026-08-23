@@ -93,6 +93,11 @@ Two entry points read this log: `GET /api/delivery-log` (row-window queries, fil
 | A served cache hit is byte-identical to what produced its hash (Capability 2) | `ContextIndex.test.ts` ("stores then serves byte-identical content"), `relay.test.ts` ("second identical call ... served from cache") |
 | Fail-open on a discrete cache miss: always a full real call, never an error, never partial content (Capability 2) | `relay.test.ts` ("fails open on a discrete cache miss"), `cacheClient.test.ts` (the DO-unreachable half of fail-open) |
 | Scope isolation: no caller resolves into another scope's cached entry (Capability 2) | `ContextIndex.test.ts` ("scope isolation"), `relay.test.ts` ("a different scope ... is its own cache miss") |
+| A scoped credential can only act within its declared origin/category/capability (Capability 3) | `agentAuth.test.ts` ("rejects a route the credential isn't permitted to use", "rejects a mismatched origin host...", "rejects a mismatched category on /subscribe...") |
+| A revoked credential is rejected even with the exact right token; an empty token is rejected before ever touching D1 or the legacy check | `agentAuth.test.ts` ("rejects a revoked credential, even with the exact right token", "rejects an empty token outright, without ever querying D1 or the shared token") |
+| A D1 lookup failure fails open to the legacy shared token, never fails closed on an infrastructure hiccup alone | `agentAuth.test.ts` ("falls through to the legacy check rather than throwing when D1 is unreachable") |
+| Tampering with any past audit entry, or deleting one, is always detected by `verify()` | `AuditLog.test.ts` ("verify() detects an entry edited after the fact...", "verify() detects a deleted entry via the resulting broken chain link", both via direct `runInDurableObject` storage mutation, not the public API) |
+| Different named audit-log instances never share or cross-link a chain | `AuditLog.test.ts` ("different named instances (different audit logs) never share a chain") |
 
 ## Capability 2: the shared, content-addressed discrete-call cache
 
@@ -119,6 +124,34 @@ PLAN.md's correctness property 6 ("fail-open on a discrete cache miss ... never 
 ### Dashboard: Cache Metrics
 
 `CacheMetrics.tsx` polls `GET /api/cache-log/stats` (true aggregate hit rate, bytes saved, and average latency by outcome, same "totals need their own `GROUP BY` query, not a summed row window" discipline as `GapAudit`'s and `AgentsView`'s own counts endpoints) and `GET /api/cache-log` for a recent-accesses table, filterable by `scope`.
+
+## Capability 3: per-agent scoped credentials and a tamper-evident audit log
+
+Capabilities 1 and 2 answer "does the relay behave correctly." This one answers a question that only matters once a real autonomous agent is making decisions on top of it: who made this decision, can that be revoked without affecting anyone else, and can the decision record itself be trusted after the fact, not just today. Built for [Fraud Ops](https://github.com/yuviib/fraud-ops)'s real LangGraph triage agent, but layered into this gateway as a general capability, not bolted onto that one consumer.
+
+### Scoped credentials: layered on top of the shared token, not replacing it
+
+`agent_credentials` in D1 stores a SHA-256 hash of each credential's token (never the raw token), plus optional `scope_origin_host` and `scope_category` restrictions and two capability flags, `can_subscribe` / `can_relay`. `resolveCredential` (`apps/gateway/src/lib/agentAuth.ts`) checks this table first, an indexed exact-match lookup on the hash, before falling back to the original shared `SUBSCRIBE_TOKEN` check. Both paths converge on the same `AuthResult` shape, so every existing call site needed only one change (checking `.authorized` on the result instead of a bare boolean, see below), not a rewrite.
+
+The fallback ordering matters: a D1 failure (unreachable, or the table doesn't exist yet in an older environment) falls through to the legacy check, exactly the same fail-open-on-infrastructure-hiccup principle already applied to the rate limiter and the cache index elsewhere in this file. A *missing token*, by contrast, is rejected immediately, before either path runs. Fail-open only ever means "try the other real credential system," never "authorize anyone."
+
+`checkScope` is applied separately, after `resolveCredential` succeeds, once the actual requested `originUrl` (and, for `/subscribe`, `category`) is known — for `/relay` that's only available after the JSON body is parsed, later than auth itself runs, so this stays a distinct explicit step rather than folded into resolution. An unrestricted credential (`scope_origin_host`/`scope_category` both `null`) passes any origin/category; a scoped one is checked against the real hostname of the requested `originUrl`, not a string a caller could spoof through some other field.
+
+### The regression this caused, and how it was caught
+
+Changing `isAuthorized` from returning `boolean` to returning `AuthResult` silently broke seven call sites elsewhere in the gateway (`agentLog.ts`, `cacheLog.ts`, `deliveryLog.ts`) that still did `if (!(await isAuthorized(...)))`. Against a truthy object, that condition is always `false`, meaning every one of those routes would have started authorizing every caller, unconditionally, the moment this shipped. The existing 401 tests for those routes failed immediately, not a manual review, and the fix was `.authorized` added to each of the seven call sites. Left in as a real example of what "the existing test suite has to actually catch a regression, not just exist" means in practice.
+
+### Why the audit log is its own Durable Object, not another D1 table
+
+`delivery_log` and `agent_log` are honest about what happened, but nothing stops a row in either from being edited directly in D1 after the fact, with no trace. `AuditLog` (`apps/gateway/src/do/AuditLog.ts`) computes `entryHash = BLAKE3(prevHash + canonicalEntry)` for every appended entry, so altering or deleting any past row breaks every hash chained after it, detectably, not just in principle.
+
+That hash chain is exactly why this lives in a Durable Object's own SQLite rather than D1: `append`'s body reads the last row's `entry_hash`, computes the new entry's hash from it, and inserts the new row, all synchronously, no `await` between the read and the write. That's what makes it atomic against a concurrent second `append` on the same instance, a DO's single-threaded execution model provides this for free; D1, reached from potentially many concurrent Worker invocations, would need its own separate locking layer to offer the same guarantee, which would just be reimplementing what a DO already does. A single global instance, not one per agent or per feed, deliberately: sharding the chain would mean "prove nothing was altered" only ever answers for one shard at a time, a weaker and more confusing claim than one continuous, verifiable sequence.
+
+`verify()` walks the whole table in `seq` order, recomputing each row's expected hash from its own stored fields and the previous row's stored hash, and compares against what's actually stored, rather than trusting the storage layer at all. An edited row (content changed, `entry_hash` left stale) fails exactly at that `seq`; a deleted row breaks the chain one row later, at the first surviving row whose claimed `prev_hash` no longer has anything to have recomputed from. Both are proven with tests that mutate the underlying SQLite table directly via `runInDurableObject`, not through the class's own public API, so the test genuinely exercises "a tamperer with row-level access," not just "a bug in `append`."
+
+### Dashboard and console consumption
+
+Read via `GET /api/audit-log` (recent entries) and `GET /api/audit-log/verify` (full chain walk), both gateway routes on top of `AuditLog`'s RPC methods. Fraud Ops's console polls the former for its live Agent Reasoning panel and calls the latter on demand from a "Verify integrity" button, comparing the verified result's `checkedCount` against the live polled entry count so a stale result (new entries having arrived since the last verify) is shown honestly as stale rather than silently displayed as still current.
 
 ## Dashboard
 
