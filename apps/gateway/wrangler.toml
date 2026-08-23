@@ -30,13 +30,22 @@ port = 8787
 # The real deployed origin-simulator host is included alongside the local
 # dev entries (not replacing them) so this one file still works for both
 # `wrangler dev` and `wrangler deploy` without editing it per-environment.
-ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794,mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+# fraud-ops-origin is a separate consumer's own demo project (a different
+# repo, its own deployed Worker on this same account) that subscribes
+# through this gateway against real production infrastructure rather than
+# a local copy -- allowlisted the same as any other legitimate origin would
+# be.
+ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794,mcp-relay-harness-origin-simulator.ybains-dev.workers.dev,fraud-ops-origin.ybains-dev.workers.dev"
 # Read by lib/fetchOrigin.ts to decide when the ORIGIN_SIMULATOR service
 # binding (declared under [env.production] below) applies, vs. the normal
 # fetch() path for every other allowlisted origin. Kept as its own var (not
 # derived from ALLOWED_ORIGIN_HOSTS) so it stays a single, unambiguous
 # exact-match value.
 ORIGIN_SIMULATOR_HOST = "mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+# Same reasoning, same fix, for fraud-ops-origin -- it also lives on this
+# account's workers.dev zone, so it hits the identical error 1042 a plain
+# fetch() would.
+FRAUD_OPS_ORIGIN_HOST = "fraud-ops-origin.ybains-dev.workers.dev"
 
 # Real Cloudflare Workers primitive (the Rate Limiting API), not a hand-
 # rolled counter -- free on every plan including Free tier, and the platform
@@ -117,8 +126,9 @@ migrations_dir = "migrations"
 # ============================================================================
 
 [env.production.vars]
-ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794,mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+ALLOWED_ORIGIN_HOSTS = "127.0.0.1:8794,localhost:8794,mcp-relay-harness-origin-simulator.ybains-dev.workers.dev,fraud-ops-origin.ybains-dev.workers.dev"
 ORIGIN_SIMULATOR_HOST = "mcp-relay-harness-origin-simulator.ybains-dev.workers.dev"
+FRAUD_OPS_ORIGIN_HOST = "fraud-ops-origin.ybains-dev.workers.dev"
 
 [[env.production.unsafe.bindings]]
 name = "RATE_LIMITER"
@@ -153,3 +163,10 @@ migrations_dir = "migrations"
 [[env.production.services]]
 binding = "ORIGIN_SIMULATOR"
 service = "mcp-relay-harness-origin-simulator"
+
+# Same fix, same reason, for fraud-ops-origin (see FRAUD_OPS_ORIGIN_HOST and
+# fetchOrigin.ts) -- a separate consumer's own demo Worker, deployed on this
+# same account, hitting the identical same-zone restriction.
+[[env.production.services]]
+binding = "FRAUD_OPS_ORIGIN"
+service = "fraud-ops-origin"
