@@ -52,7 +52,7 @@ export async function handleRelay(request: Request, env: Env): Promise<Response>
   if (!auth.authorized) {
     return new Response("Unauthorized", { status: 401 });
   }
-  if (await isRateLimited(request, env, "relay")) {
+  if (await isRateLimited(request, env, "relay", auth)) {
     return new Response("Too many relay calls, slow down", { status: 429 });
   }
 
@@ -137,8 +137,12 @@ export async function handleRelay(request: Request, env: Env): Promise<Response>
     // When the real call itself fails, there is no honest content left to
     // return, so this surfaces as an actual error, same as any other
     // upstream-call failure in this codebase (see subscribe.ts's own
-    // non-OK handling) rather than being papered over.
-    return new Response(`Origin call failed: ${err instanceof Error ? err.message : String(err)}`, { status: 502 });
+    // non-OK handling) rather than being papered over. The real error
+    // (which can include internal detail -- hostnames, connection-failure
+    // reasons) is logged server-side, captured by this Worker's own
+    // observability config, never put in the client-facing body itself.
+    console.error(`relay: origin call to ${originUrl} failed`, err);
+    return new Response("Origin call failed", { status: 502 });
   }
 
   if (!originRes.ok) {
