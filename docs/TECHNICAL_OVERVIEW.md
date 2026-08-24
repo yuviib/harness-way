@@ -44,30 +44,41 @@ directly against what the 2026-07-28 revision removed.
 
 ## 2. System architecture
 
-```
-                    one real upstream connection
-  origin (MCP server)  <----------------------------  FeedRelay (Durable Object)
-   subscriptions/listen                                     |  hibernatable WebSocket
-                                                              |  fan-out, N downstream
-                                    -----------------------------------------------------
-                                    |            |            |                         |
-                              subscriber 1  subscriber 2  subscriber 3 ...      apps/agents (4 real consumers)
+```mermaid
+flowchart LR
+    Origin["origin (MCP server)<br/>subscriptions/listen"]
+    Relay["FeedRelay<br/>(Durable Object)"]
+    Sub1["subscriber 1"]
+    Sub2["subscriber 2"]
+    Sub3["subscriber 3 ..."]
+    Agents["apps/agents<br/>(4 real consumers)"]
 
-                    discrete tools/call, cached by content hash, shared per scope
-  origin (MCP server)  <---------------------------------------------------------  ContextIndex (Durable Object)
-   tools/call                                                                       ^  one instance per scope
-                                                                                     |
-                                                                        POST /relay {originUrl, scope, tool, arguments}
-                                                                            ^                    ^
-                                                                     caller A (miss)      caller B (hit, same scope)
-
-  Worker (apps/gateway)                   D1 (delivery_log, agent_log, cache_log)
-    /subscribe  -> auth, rate limit, then routes to the FeedRelay DO keyed on (originUrl, category)
-    /relay      -> auth, rate limit, then routes to the ContextIndex DO keyed on scope, fails open to a real origin call on any miss
-    /api/delivery-log, /api/delivery-log/counts  -> relay history, read by the dashboard
-    /api/agent-log, /api/agent-log/counts        -> agent activity, read by the dashboard
-    /api/cache-log, /api/cache-log/stats         -> cache hit/miss history, read by the dashboard
+    Origin <-->|one real upstream connection| Relay
+    Relay -->|hibernatable WebSocket, fan-out| Sub1
+    Relay --> Sub2
+    Relay --> Sub3
+    Relay --> Agents
 ```
+
+```mermaid
+flowchart LR
+    Origin2["origin (MCP server)<br/>tools/call"]
+    Index["ContextIndex<br/>(Durable Object)<br/>one instance per scope"]
+    CallerA["caller A (miss)"]
+    CallerB["caller B (hit, same scope)"]
+
+    Origin2 <-->|discrete tools/call,<br/>cached by content hash| Index
+    CallerA -->|POST /relay| Index
+    CallerB -->|POST /relay| Index
+```
+
+| Route | Routes to | Notes |
+|---|---|---|
+| `/subscribe` | `FeedRelay` DO, keyed on `(originUrl, category)` | Auth + rate limit first |
+| `/relay` | `ContextIndex` DO, keyed on `scope` | Auth + rate limit first; fails open to a real origin call on any miss |
+| `/api/delivery-log`, `/api/delivery-log/counts` | D1 `delivery_log` | Relay history, read by the dashboard |
+| `/api/agent-log`, `/api/agent-log/counts` | D1 `agent_log` | Agent activity, read by the dashboard |
+| `/api/cache-log`, `/api/cache-log/stats` | D1 `cache_log` | Cache hit/miss history, read by the dashboard |
 
 ### Component inventory
 

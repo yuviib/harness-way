@@ -58,31 +58,51 @@ MCP is the protocol AI agents use to talk to tools and resources, so this isn't 
 
 ## Architecture
 
-```
-                    one real upstream connection
-  origin (MCP server)  <----------------------------  FeedRelay (Durable Object)
-   subscriptions/listen                                     |  hibernatable WebSocket
-                                                              |  fan-out, N downstream
-                                    -----------------------------------------------------
-                                    |            |            |                         |
-                              subscriber 1  subscriber 2  subscriber 3 ...      apps/agents (4 real consumers)
+**Capability 1 — multiplexing.** One real upstream connection, fanned out live to every downstream
+subscriber:
 
-                    discrete tools/call, cached by content hash, shared per scope
-  origin (MCP server)  <---------------------------------------------------------  ContextIndex (Durable Object)
-   tools/call                                                                       ^  one instance per scope
-                                                                                     |
-                                                                        POST /relay {originUrl, scope, tool, arguments}
-                                                                            ^                    ^
-                                                                     caller A (miss)      caller B (hit, same scope)
+```mermaid
+flowchart LR
+    Origin["origin (MCP server)<br/>subscriptions/listen"]
+    Relay["FeedRelay<br/>(Durable Object)"]
+    Sub1["subscriber 1"]
+    Sub2["subscriber 2"]
+    Sub3["subscriber 3 ..."]
+    Agents["apps/agents<br/>(4 real consumers)"]
 
-  Worker (apps/gateway)                   D1 (delivery_log, agent_log, cache_log, agent_credentials)
-    /subscribe  -> routes to the FeedRelay DO keyed on (originUrl, category), scope-checked against agent_credentials
-    /relay      -> routes to the ContextIndex DO keyed on scope, fails open to a real origin call on any miss
-    /api/delivery-log, /api/delivery-log/counts  -> relay history, read by the dashboard
-    /api/agent-log, /api/agent-log/counts        -> agent activity, read by the dashboard
-    /api/cache-log, /api/cache-log/stats         -> cache hit/miss history, read by the dashboard
-    /api/audit-log, /api/audit-log/verify        -> append/read/verify the hash-chained AuditLog DO, read by any real agent consumer (e.g. Fraud Ops)
+    Origin <-->|one real upstream connection| Relay
+    Relay -->|hibernatable WebSocket, fan-out| Sub1
+    Relay --> Sub2
+    Relay --> Sub3
+    Relay --> Agents
 ```
+
+**Capability 2 — shared cache.** A discrete `tools/call`, cached by content hash and shared per
+scope:
+
+```mermaid
+flowchart LR
+    Origin2["origin (MCP server)<br/>tools/call"]
+    Index["ContextIndex<br/>(Durable Object)<br/>one instance per scope"]
+    CallerA["caller A (miss)"]
+    CallerB["caller B (hit, same scope)"]
+
+    Origin2 <-->|discrete tools/call,<br/>cached by content hash| Index
+    CallerA -->|POST /relay| Index
+    CallerB -->|POST /relay| Index
+```
+
+**The gateway's own route table**, `apps/gateway` (Worker) reading/writing D1 (`delivery_log`,
+`agent_log`, `cache_log`, `agent_credentials`):
+
+| Route | Routes to | Notes |
+|---|---|---|
+| `/subscribe` | `FeedRelay` DO, keyed on `(originUrl, category)` | Scope-checked against `agent_credentials` |
+| `/relay` | `ContextIndex` DO, keyed on `scope` | Fails open to a real origin call on any miss |
+| `/api/delivery-log`, `/api/delivery-log/counts` | D1 `delivery_log` | Relay history, read by the dashboard |
+| `/api/agent-log`, `/api/agent-log/counts` | D1 `agent_log` | Agent activity, read by the dashboard |
+| `/api/cache-log`, `/api/cache-log/stats` | D1 `cache_log` | Cache hit/miss history, read by the dashboard |
+| `/api/audit-log`, `/api/audit-log/verify` | `AuditLog` DO (hash-chained) | Append/read/verify, read by any real agent consumer (e.g. Fraud Ops) |
 
 - **`apps/gateway`** (Cloudflare Worker + three Durable Object classes): the relay itself. `FeedRelay` is one DO instance per feed; it owns the single upstream connection, the replay buffer, and fan-out to every downstream hibernatable WebSocket. `ContextIndex` is one DO instance per cache `scope`; it owns that scope's content-addressed cache index. `AuditLog` is a single instance owning the hash-chained decision log, real RPC methods (`append`, `list`, `verify`), not a `fetch()` handler.
 - **`crates/mcp-relay-engine`** (Rust, compiled to WASM): incremental, chunk-boundary-safe SSE parsing, plus BLAKE3 content hashing for the cache. The upstream response body is a stream that can split an event across two chunks at any byte offset; this is a real parser for that, not a naive split-on-newline. Both are wired directly into the gateway's real request paths, not standalone demos.

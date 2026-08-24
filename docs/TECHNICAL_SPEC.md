@@ -132,37 +132,38 @@ it doesn't know `fraud-ops` exists except as one more allowlisted origin host in
 
 ### 3.2 High-level architecture
 
-```
-┌─────────────────────────────── harness-way ────────────────────────────────┐
-│                                                                              │
-│  origin-simulator ──subscriptions/listen──▶  FeedRelay (DO)  ──fan-out──▶  │
-│  (synthetic MCP           ▲                        │                       │
-│   origin, dev/eval)       │                    ContextIndex (DO)            │
-│                           │                    (content-addressed cache)    │
-│                           │                        │                       │
-│                     gateway Worker  ◀────────  AuditLog (DO)               │
-│                     (routes, auth,             (hash-chained,              │
-│                      rate limit)                per-agent credentials)     │
-│                           │                                                │
-│                        D1 (delivery_log, agent_log, cache_log,             │
-│                            agent_credentials)                              │
-│                           │                                                │
-│                      dashboard (React, operator view)                      │
-└──────────────────────────┼───────────────────────────────────────────────┘
-                            │ real deployed gateway, not a local copy
-┌───────────────────────────┼──────────────────── fraud-ops ─────────────────┐
-│                            ▼                                                │
-│  origin (synthetic     ──subscriptions/listen──▶  same gateway, same       │
-│  fraud-signal DO)                                  FeedRelay/AuditLog      │
-│         ▲                                                  │               │
-│         │                                          scoped credential       │
-│    console (naive panel,      triage agent (LangGraph.js, local process,   │
-│    direct connection,          subscribes via /subscribe, writes           │
-│    no relay)                   decisions to /api/audit-log)                │
-│         ▲                              │                                   │
-│         └──────── relay panel ─────────┘                                   │
-│              (subscribes through the gateway above)                        │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph harness["harness-way"]
+        direction TB
+        OriginSim["origin-simulator<br/>(synthetic MCP origin, dev/eval)"]
+        FeedRelay["FeedRelay (DO)"]
+        ContextIndex["ContextIndex (DO)<br/>content-addressed cache"]
+        AuditLog["AuditLog (DO)<br/>hash-chained, per-agent credentials"]
+        Gateway["gateway Worker<br/>routes, auth, rate limit"]
+        D1["D1: delivery_log, agent_log,<br/>cache_log, agent_credentials"]
+        Dashboard["dashboard (React, operator view)"]
+
+        OriginSim -->|subscriptions/listen| FeedRelay
+        FeedRelay --> ContextIndex
+        Gateway --> AuditLog
+        Gateway --> D1
+        D1 --> Dashboard
+    end
+
+    subgraph fraudops["fraud-ops"]
+        direction TB
+        FOOrigin["origin<br/>(synthetic fraud-signal DO)"]
+        Console["console<br/>naive panel (direct) +<br/>relay panel (through gateway)"]
+        Agent["triage agent<br/>(LangGraph.js, local process)"]
+
+        FOOrigin -->|subscriptions/listen| Console
+        FOOrigin -->|subscriptions/listen| Agent
+    end
+
+    FOOrigin -.->|real deployed gateway,<br/>not a local copy| Gateway
+    Agent -.->|scoped credential,<br/>writes decisions| AuditLog
+    Console -.->|relay panel subscribes<br/>through the gateway| Gateway
 ```
 
 ### 3.3 Deployed services inventory
@@ -625,26 +626,26 @@ deployed to Workers Static Assets.
 
 ### 7.1 Full request/data flow, one signal end to end
 
-```
-1. FraudOrigin DO (fraud-ops)         computes a deterministic signal for the current tick
-2. FraudOrigin DO                     pushes it as an SSE `notifications/transaction-signals` frame
-                                       to every open /mcp subscriber, including the gateway's own
-                                       upstream FeedRelay connection
-3. FeedRelay DO (harness-way)         receives it via the WASM SSE parser, writes it into its
-                                       replay buffer (ctx.storage.sql), fans it out to every
-                                       downstream WebSocket subscriber -- the console's Relay Feed
-                                       panel AND the triage agent, both real, independent /subscribe
-                                       connections through the SAME FeedRelay instance
-4. triage agent (fraud-ops)           receives the event over its own /subscribe WebSocket,
-                                       invokes the LangGraph with { thread_id: caseId }
-5. triageGraph                        ingestSignal -> assessRisk (real OpenRouter call, retry/
-                                       fallback/throttle per S6.2) -> routeByRisk -> a decision node
-6. agent (auditClient.ts)             POSTs the decision to the gateway's /api/audit-log,
-                                       authenticated with its OWN scoped credential (S5.7)
-7. AuditLog DO (harness-way)          appends the entry, hash-chained to the previous real entry,
-                                       attributed to the agent's real resolved identity
-8. console (fraud-ops)                polls /api/audit-log, renders the decision + reasoning live
-                                       in the Agent Reasoning panel
+```mermaid
+sequenceDiagram
+    participant O as FraudOrigin DO<br/>(fraud-ops)
+    participant F as FeedRelay DO<br/>(harness-way)
+    participant A as triage agent<br/>(fraud-ops)
+    participant G as triageGraph
+    participant L as AuditLog DO<br/>(harness-way)
+    participant C as console<br/>(fraud-ops)
+
+    O->>O: compute a deterministic signal for the current tick
+    O->>F: SSE notifications/transaction-signals frame
+    Note over F: WASM SSE parser, writes into the replay buffer,<br/>fans out to every downstream /subscribe connection
+    F->>A: event delivered over its own /subscribe WebSocket
+    A->>G: invoke({ thread_id: caseId })
+    Note over G: ingestSignal -> assessRisk (real OpenRouter call,<br/>retry/fallback/throttle) -> routeByRisk -> decision node
+    G-->>A: decision
+    A->>L: POST /api/audit-log, own scoped credential
+    L->>L: append -- hash-chained to the previous real entry
+    C->>L: poll /api/audit-log
+    L-->>C: decision + reasoning, rendered in Agent Reasoning
 ```
 
 Steps 1–3 are pure infrastructure (harness-way's job); steps 4–6 are the one piece of real
@@ -671,10 +672,14 @@ harness-way's infrastructure, consumed by a `fraud-ops`-owned identity.
 
 ### 7.3 Service binding topology
 
-```
-gateway (harness-way)
-  ├─[env.production].services.ORIGIN_SIMULATOR  → mcp-relay-harness-origin-simulator
-  └─[env.production].services.FRAUD_OPS_ORIGIN   → fraud-ops-origin
+```mermaid
+flowchart LR
+    Gateway["gateway (harness-way)<br/>env.production"]
+    OriginSim["ORIGIN_SIMULATOR<br/>mcp-relay-harness-origin-simulator"]
+    FraudOrigin["FRAUD_OPS_ORIGIN<br/>fraud-ops-origin"]
+
+    Gateway -->|service binding| OriginSim
+    Gateway -->|service binding| FraudOrigin
 ```
 
 Both bindings exist for the identical reason: the gateway's own `fetchOrigin.ts` checks the target
