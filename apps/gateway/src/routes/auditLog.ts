@@ -12,7 +12,7 @@
 // audit log -- the one thing it has to guarantee is that "who did this"
 // is exactly who authenticated, not who the request merely says did.
 import { corsHeaders } from "../lib/cors";
-import { isAuthorized } from "./subscribe";
+import { isAuthorized, isRateLimited } from "./subscribe";
 
 // Generous relative to real usage (a real agent's JSON-encoded detail --
 // caseId, riskLevel, a one-sentence reasoning string, a signal count -- is
@@ -57,6 +57,9 @@ export async function handleAuditLogPost(request: Request, env: Env): Promise<Re
   const auth = await isAuthorized(request, env);
   if (!auth.authorized) {
     return new Response("Unauthorized", { status: 401, headers: cors });
+  }
+  if (await isRateLimited(request, env, "audit-log", auth)) {
+    return new Response("Too many audit-log writes, slow down", { status: 429, headers: cors });
   }
 
   let body: AuditLogPostBody;

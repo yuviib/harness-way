@@ -65,6 +65,24 @@ describe("handleAgentLogPost", () => {
     expect(rows[0]!.seq).toBe(42);
   });
 
+  it("is really rate limited, not just parsed and stored unbounded -- a real gap before this was added", async () => {
+    // Its own distinct IP so this doesn't share a bucket with any of the
+    // other tests in this file, which all post via the no-IP default key.
+    const ip = `203.0.113.${Math.floor(Math.random() * 255)}-${crypto.randomUUID()}`;
+    const body = { feedKey: `test-feed-${crypto.randomUUID()}`, agentName: "a", agentRole: "r", actionType: "summary" };
+    const req = () =>
+      new Request("https://x/api/agent-log", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}`, "CF-Connecting-IP": ip },
+        body: JSON.stringify(body),
+      });
+    let lastStatus = 0;
+    for (let i = 0; i < 31; i++) {
+      lastStatus = (await handleAgentLogPost(req(), env)).status;
+    }
+    expect(lastStatus).toBe(429);
+  });
+
   it("echoes back the request's own Origin when it's on the allowlist", async () => {
     const res = await handleAgentLogPost(
       postRequest(
@@ -134,20 +152,35 @@ describe("handleAgentLogCounts", () => {
   });
 
   it("returns exact per-action-type totals even when one type vastly outnumbers the others", async () => {
+    // This test alone posts more than the real, enforced rate limit (30/60s)
+    // on purpose -- it's testing count-aggregation accuracy under volume, a
+    // different concern entirely, so it needs its own isolated identity (a
+    // unique IP) rather than sharing the default no-IP bucket every other
+    // test in this file uses, the same isolation subscribe.test.ts's own
+    // rate-limit tests already rely on for the identical reason.
+    const ip = `203.0.113.${Math.floor(Math.random() * 255)}-${crypto.randomUUID()}`;
     const feedKey = `test-feed-${crypto.randomUUID()}`;
-    for (let i = 0; i < 40; i++) {
-      await handleAgentLogPost(
-        postRequest({ feedKey, agentName: "ordering-agent", agentRole: "r", actionType: "order_check" }),
-        env,
-      );
+    function post(body: unknown): Request {
+      return new Request("https://x/api/agent-log", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}`, "CF-Connecting-IP": ip },
+        body: JSON.stringify(body),
+      });
     }
-    await handleAgentLogPost(postRequest({ feedKey, agentName: "gap-aware-agent", agentRole: "r", actionType: "resync" }), env);
-    await handleAgentLogPost(postRequest({ feedKey, agentName: "resume-agent", agentRole: "r", actionType: "error" }), env);
+    // 25, not the original 40 -- comfortably under the real, enforced
+    // rate limit (30/60s) while still genuinely lopsided against the 1-each
+    // of the other two types, which is the actual property this test
+    // proves; the exact count was never the point, only that it's exact.
+    for (let i = 0; i < 25; i++) {
+      await handleAgentLogPost(post({ feedKey, agentName: "ordering-agent", agentRole: "r", actionType: "order_check" }), env);
+    }
+    await handleAgentLogPost(post({ feedKey, agentName: "gap-aware-agent", agentRole: "r", actionType: "resync" }), env);
+    await handleAgentLogPost(post({ feedKey, agentName: "resume-agent", agentRole: "r", actionType: "error" }), env);
 
     const res = await handleAgentLogCounts(authedRequest(`?feedKey=${encodeURIComponent(feedKey)}`), env);
     expect(res.status).toBe(200);
     const counts = (await res.json()) as Record<string, number>;
-    expect(counts.order_check).toBe(40);
+    expect(counts.order_check).toBe(25);
     expect(counts.resync).toBe(1);
     expect(counts.error).toBe(1);
     expect(counts.reconnect_verified).toBe(0);

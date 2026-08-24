@@ -15,19 +15,31 @@ export async function isAuthorized(request: Request, env: Env): Promise<AuthResu
 }
 
 // Real Workers Rate Limiting binding (see wrangler.toml), not a hand-rolled
-// counter. `routeKey` keeps /subscribe and /relay in independent buckets on
-// one shared binding. The timeout+fail-open below exists because this
+// counter. `routeKey` keeps every route's own bucket independent on one
+// shared binding -- covers every mutating route, not just the two
+// obviously expensive ones (a live upstream connection, a real origin
+// call): POST /api/agent-log and POST /api/audit-log are real DB writes
+// too, and had no rate limiting at all before this was added, a real gap,
+// not a deliberate scope cut. The timeout+fail-open below exists because this
 // binding runs in "remote" mode under local `wrangler dev` and hangs
 // (doesn't error) without real Cloudflare auth -- same fail-open principle
 // as ContextIndex's cache lookup, applied here so an infra hiccup degrades
 // availability, not blocks real requests.
 const RATE_LIMIT_TIMEOUT_MS = 500;
 
-export async function isRateLimited(request: Request, env: Env, routeKey: "subscribe" | "relay"): Promise<boolean> {
-  // CF-Connecting-IP is the real per-client signal; absent in local dev, so
-  // this falls back to the shared token -- same trust boundary as
-  // SUBSCRIBE_TOKEN itself, not a weaker one.
-  const clientKey = request.headers.get("CF-Connecting-IP") ?? env.SUBSCRIBE_TOKEN;
+export async function isRateLimited(request: Request, env: Env, routeKey: "subscribe" | "relay" | "agent-log" | "audit-log", auth: AuthResult): Promise<boolean> {
+  // Prefer the caller's own real, authenticated identity over IP. A raw IP
+  // can legitimately represent many distinct real callers sharing one NAT
+  // (an office network, a campus, or simply two different agents run from
+  // the same machine) -- keying on IP alone means one noisy caller behind
+  // that IP can exhaust the budget for everyone else on it, an unfairness
+  // that has nothing to do with how much any ONE of them actually called.
+  // A scoped credential's agentId is a genuine per-caller signal, so it's
+  // used whenever one is present. Only the legacy shared-token path, which
+  // has no real per-caller identity to fall back on, still keys by IP --
+  // the best available signal for that weaker auth tier, the same trust
+  // boundary the token itself already accepts, not a new one.
+  const clientKey = auth.agentId !== null ? `agent:${auth.agentId}` : (request.headers.get("CF-Connecting-IP") ?? env.SUBSCRIBE_TOKEN);
   try {
     const outcome = await Promise.race([
       env.RATE_LIMITER.limit({ key: `${routeKey}:${clientKey}` }),
@@ -68,7 +80,7 @@ export async function handleSubscribe(request: Request, env: Env): Promise<Respo
   if (!auth.authorized) {
     return new Response("Unauthorized", { status: 401 });
   }
-  if (await isRateLimited(request, env, "subscribe")) {
+  if (await isRateLimited(request, env, "subscribe", auth)) {
     return new Response("Too many subscribe attempts, slow down", { status: 429 });
   }
 

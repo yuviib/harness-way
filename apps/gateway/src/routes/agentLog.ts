@@ -9,7 +9,7 @@
 // real HTTP call -- so this route needs a POST handler, not just GET.
 
 import { corsHeaders } from "../lib/cors";
-import { isAuthorized } from "./subscribe";
+import { isAuthorized, isRateLimited } from "./subscribe";
 
 const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 100;
@@ -31,8 +31,12 @@ export function handleAgentLogPreflight(request: Request): Response {
 
 export async function handleAgentLogPost(request: Request, env: Env): Promise<Response> {
   const cors = corsHeaders(request, "GET, POST, OPTIONS", "Authorization, Content-Type");
-  if (!(await isAuthorized(request, env)).authorized) {
+  const auth = await isAuthorized(request, env);
+  if (!auth.authorized) {
     return new Response("Unauthorized", { status: 401, headers: cors });
+  }
+  if (await isRateLimited(request, env, "agent-log", auth)) {
+    return new Response("Too many agent-log writes, slow down", { status: 429, headers: cors });
   }
 
   let body: AgentLogPost;

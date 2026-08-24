@@ -117,4 +117,17 @@ describe("audit log routes", () => {
     expect(res.status).toBe(204);
     expect(res.headers.get("Access-Control-Allow-Methods")).toContain("POST");
   });
+
+  it("is really rate limited, not just accepted unbounded -- a real gap before this was added", async () => {
+    // A fresh credential per test already gives this its own independent
+    // rate-limit bucket (keyed by agentId, not IP), no separate isolation
+    // needed the way the shared-token-based tests elsewhere need a unique
+    // IP for the same reason.
+    const token = await issueCredential(`ratelimit-test-${crypto.randomUUID()}`);
+    let lastStatus = 0;
+    for (let i = 0; i < 31; i++) {
+      lastStatus = (await handleAuditLogPost(postReq(token, { action: "escalate", detail: "case-1" }), env)).status;
+    }
+    expect(lastStatus).toBe(429);
+  });
 });

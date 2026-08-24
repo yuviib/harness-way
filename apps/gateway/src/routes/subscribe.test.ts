@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { buildFeedKey, handleSubscribe, isAllowedOrigin, isAuthorized, isRateLimited } from "./subscribe";
+import { buildFeedKey, handleSubscribe, isAllowedOrigin, isAuthorized, isRateLimited, type AuthResult } from "./subscribe";
 
 // wrangler.toml's RATE_LIMITER binding is configured `simple = { limit: 30,
 // period: 60 }`, shared across every test in this file -- each test below
@@ -9,6 +9,21 @@ import { buildFeedKey, handleSubscribe, isAllowedOrigin, isAuthorized, isRateLim
 // seriously for a different reason.
 function uniqueIp(): string {
   return `203.0.113.${Math.floor(Math.random() * 255)}-${crypto.randomUUID()}`;
+}
+
+async function sharedTokenAuth(): Promise<AuthResult> {
+  return isAuthorized(new Request("https://x/", { headers: { Authorization: `Bearer ${env.SUBSCRIBE_TOKEN}` } }), env);
+}
+
+async function scopedAgentAuth(agentName: string): Promise<AuthResult> {
+  const token = `ratelimit-test-${agentName}-${crypto.randomUUID()}`;
+  const tokenHash = await crypto.subtle
+    .digest("SHA-256", new TextEncoder().encode(token))
+    .then((d) => [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join(""));
+  await env.DB.prepare("INSERT INTO agent_credentials (agent_name, token_hash, can_subscribe, created_at) VALUES (?, ?, 1, ?)")
+    .bind(agentName, tokenHash, new Date().toISOString())
+    .run();
+  return isAuthorized(new Request("https://x/", { headers: { Authorization: `Bearer ${token}` } }), env);
 }
 
 // Real bindings from wrangler.toml, running inside the actual workerd
@@ -137,15 +152,16 @@ describe("isAllowedOrigin (SSRF guard)", () => {
 describe("isRateLimited (real Workers Rate Limiting API, not hand-rolled)", () => {
   it("allows a fresh key through", async () => {
     const req = new Request("https://x/", { headers: { "CF-Connecting-IP": uniqueIp() } });
-    expect(await isRateLimited(req, env, "subscribe")).toBe(false);
+    expect(await isRateLimited(req, env, "subscribe", await sharedTokenAuth())).toBe(false);
   });
 
   it("trips after exceeding the configured limit (30 per 60s) for one key", async () => {
     const ip = uniqueIp();
     const req = new Request("https://x/", { headers: { "CF-Connecting-IP": ip } });
+    const auth = await sharedTokenAuth();
     const results: boolean[] = [];
     for (let i = 0; i < 31; i++) {
-      results.push(await isRateLimited(req, env, "subscribe"));
+      results.push(await isRateLimited(req, env, "subscribe", auth));
     }
     expect(results.slice(0, 30)).toEqual(Array(30).fill(false));
     expect(results[30]).toBe(true);
@@ -154,22 +170,42 @@ describe("isRateLimited (real Workers Rate Limiting API, not hand-rolled)", () =
   it("keeps /subscribe and /relay in independent buckets on the same key", async () => {
     const ip = uniqueIp();
     const req = new Request("https://x/", { headers: { "CF-Connecting-IP": ip } });
+    const auth = await sharedTokenAuth();
     for (let i = 0; i < 30; i++) {
-      await isRateLimited(req, env, "subscribe");
+      await isRateLimited(req, env, "subscribe", auth);
     }
     // subscribe's own bucket for this IP is now exhausted -- relay's bucket
     // for the SAME IP must be entirely unaffected, since they're keyed
     // "subscribe:<ip>" vs "relay:<ip>", not "<ip>" alone.
-    expect(await isRateLimited(req, env, "subscribe")).toBe(true);
-    expect(await isRateLimited(req, env, "relay")).toBe(false);
+    expect(await isRateLimited(req, env, "subscribe", auth)).toBe(true);
+    expect(await isRateLimited(req, env, "relay", auth)).toBe(false);
   });
 
-  it("falls back to the shared token as the key when CF-Connecting-IP is absent (local dev)", async () => {
+  it("falls back to the shared token as the key when CF-Connecting-IP is absent (local dev), for the legacy auth path", async () => {
     // Not a bypass -- this is the same "one shared secret is the whole
     // trust boundary" model already true of SUBSCRIBE_TOKEN itself, applied
     // consistently. Just asserting it doesn't throw or silently no-op.
     const req = new Request("https://x/");
-    expect(typeof (await isRateLimited(req, env, "subscribe"))).toBe("boolean");
+    expect(typeof (await isRateLimited(req, env, "subscribe", await sharedTokenAuth()))).toBe("boolean");
+  });
+
+  it("keys by the caller's own real agentId when one exists, NOT by IP -- two different real agents behind the same IP get independent buckets", async () => {
+    // The actual fix: a raw IP can legitimately represent many distinct
+    // real callers sharing one NAT (an office network, a campus, or two
+    // agents on the same machine). Exhausting one real agent's own budget
+    // must never punish a different, genuinely distinct agent just
+    // because they happen to share a network.
+    const ip = uniqueIp();
+    const req = new Request("https://x/", { headers: { "CF-Connecting-IP": ip } });
+    const authA = await scopedAgentAuth(`ratelimit-agent-a-${crypto.randomUUID()}`);
+    const authB = await scopedAgentAuth(`ratelimit-agent-b-${crypto.randomUUID()}`);
+
+    for (let i = 0; i < 30; i++) {
+      await isRateLimited(req, env, "subscribe", authA);
+    }
+    expect(await isRateLimited(req, env, "subscribe", authA)).toBe(true);
+    // Agent B, calling from that exact same IP, is completely unaffected.
+    expect(await isRateLimited(req, env, "subscribe", authB)).toBe(false);
   });
 });
 
